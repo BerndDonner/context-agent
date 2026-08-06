@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "context-agent"
+version = "0.1.0"
+description = "Small agentic workflow for generating and compiling ConTeXt documents"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{name = "Bernd Donner"}]
+dependencies = [
+  "openai>=2.53,<3",
+  "pydantic>=2.12,<3",
+  "PyYAML>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=2.3,<3",
+  "pytest>=9,<10",
+  "ruff>=0.15,<0.16",
+]
+
+[project.scripts]
+context-agent = "context_agent.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+context_agent = [
+  "resources/prompts/*.md",
+  "resources/runtime/*.sh",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["context_agent"]
+mypy_path = "src"
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true

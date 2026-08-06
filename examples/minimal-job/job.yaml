@@ -1,0 +1,24 @@
+model: YOUR_MODEL_ID
+
+task: task.md
+
+template:
+  path: template/template.tex
+
+inputs:
+  - path: input/vorgabe.md
+    role: content
+    policy: guidance
+
+references: []
+
+runtime:
+  context_archive: /pfad/zu/context-lmtx-ready.tar.xz
+  memory_limit: 4g
+  keep_remote: false
+
+limits:
+  max_agent_turns: 6
+  max_nogo_repairs: 3
+  timeout_seconds: 900
+  max_output_tokens: 12000
