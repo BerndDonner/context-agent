@@ -43,17 +43,20 @@
         symbol = "🐍";
         pythonVersion = pkgs.python3;
 
-        extraPackages = with pkgs; [
+        pythonPackages = ps: [
           # Laufzeitabhängigkeiten von context-agent
-          python3Packages.pyyaml
-          python3Packages.pydantic
+          ps.pyyaml
+          ps.pydantic
           openaiLatest
 
-          # Entwicklungswerkzeuge
-          python3Packages.pytest
-          python3Packages.mypy
-          unstable.python3Packages.ruff
+          # Python-Entwicklungswerkzeuge
+          ps.pytest
+          ps.mypy
+        ];
 
+        extraPackages = with pkgs; [
+          # Zusätzliche Kommandozeilenwerkzeuge
+          unstable.python3Packages.ruff
           vscode-fhs
         ];
 
