@@ -45,11 +45,22 @@ Für Entwicklung und Tests:
 python -m pip install -e '.[dev]'
 ```
 
-Der API-Schlüssel wird ausschließlich über die normale OpenAI-Konfiguration gesetzt:
+Der Agent erwartet den API-Schlüssel ausschließlich in der Umgebungsvariable
+`OPENAI_API_KEY`. In der Nix-DevShell wird sie über das zentrale Secret-Handling aus der
+gepinnten `NixOS-Config` geladen:
+
+```nix
+secretSets = [ "openai" ];
+```
+
+Damit reicht im normalen Entwicklungsworkflow:
 
 ```bash
-export OPENAI_API_KEY='...'
+nix develop
 ```
+
+Außerhalb der DevShell muss `OPENAI_API_KEY` vor dem Start auf anderem Weg in der
+Umgebung gesetzt werden. Der Agent liest keine Schlüsseldatei aus dem Repository.
 
 ## Jobstruktur
 

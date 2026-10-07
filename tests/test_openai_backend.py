@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import context_agent.openai_backend as openai_backend
+from context_agent.errors import RemoteAgentError
 from context_agent.job import load_job
 from context_agent.openai_backend import (
     OpenAIHostedSession,
@@ -121,3 +123,42 @@ def test_context_archive_is_wrapped_as_opaque_bundle(tmp_path: Path) -> None:
     assert data.startswith(b"CONTEXT_AGENT_ARCHIVE_V1\n")
     assert data.endswith(source.read_bytes())
     assert not data.startswith(b"\xfd7zXZ")
+
+
+def test_create_client_uses_openai_api_key_from_environment(
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(kwargs)
+
+    fake_module = SimpleNamespace(__version__="test", OpenAI=FakeOpenAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(openai_backend.importlib, "import_module", lambda name: fake_module)
+
+    OpenAIHostedSession._create_client(17)
+
+    assert calls == [
+        {
+            "api_key": "test-api-key",
+            "timeout": 17.0,
+            "max_retries": 2,
+        }
+    ]
+
+
+def test_create_client_requires_openai_api_key(
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    fake_module = SimpleNamespace(__version__="test", OpenAI=object)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(openai_backend.importlib, "import_module", lambda name: fake_module)
+
+    try:
+        OpenAIHostedSession._create_client(17)
+    except RemoteAgentError as exc:
+        assert "OPENAI_API_KEY is not set" in str(exc)
+    else:
+        raise AssertionError("missing OPENAI_API_KEY should fail")

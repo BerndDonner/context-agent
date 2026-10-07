@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
 import tempfile
 from contextlib import suppress
@@ -72,7 +73,19 @@ class OpenAIHostedSession:
         client_type = getattr(module, "OpenAI", None)
         if client_type is None:
             raise RemoteAgentError(f"unsupported openai package ({version}): OpenAI client missing")
-        return client_type(timeout=float(timeout_seconds), max_retries=2)
+
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RemoteAgentError(
+                "OPENAI_API_KEY is not set. Configure it in the environment "
+                "before starting context-agent."
+            )
+
+        return client_type(
+            api_key=api_key,
+            timeout=float(timeout_seconds),
+            max_retries=2,
+        )
 
     def _upload(self, path: Path) -> UploadedFile:
         try:
