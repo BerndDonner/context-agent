@@ -177,3 +177,12 @@ mypy
 
 Der OpenAI-Livepfad benötigt einen API-Schlüssel und ein Konto mit Zugriff auf Hosted Shell und
 Container. Die lokalen Tests verwenden einen Fake-Agenten und verursachen keine API-Kosten.
+
+
+### Dateigrenze des Hosted Containers
+
+Das portable ConTeXt-Archiv wird als undurchsichtiges `.ctxbundle` hochgeladen und nicht als
+erkennbares Archiv. Erkannte Archive werden beim Bereitstellen für den Container aufgefächert;
+der vollständige ConTeXt-Baum enthält mehr als 6.000 Dateien. Der Runtime-Helper entfernt den
+privaten Header, entpackt ConTeXt nur für genau einen Übersetzungslauf und löscht den temporären
+Baum auch nach einem Compilerfehler wieder.

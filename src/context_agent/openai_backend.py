@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,9 @@ from typing import Any, ClassVar, Protocol, cast
 
 from context_agent.errors import ArtifactError, RemoteAgentError
 from context_agent.models import AgentTurn, ResolvedJob
+
+
+_CONTEXT_BUNDLE_HEADER = b"CONTEXT_AGENT_ARCHIVE_V1\n"
 
 
 class AgentSession(Protocol):
@@ -85,24 +90,36 @@ class OpenAIHostedSession:
 
     def _prepare_remote(self) -> None:
         bundle = self._upload(self.bundle_path)
-        context_archive = self._upload(self.job.context_archive)
-        for path in self.direct_files:
-            self._upload(path)
 
-        expires_minutes = min(60, max(20, self.job.config.limits.timeout_seconds // 60 + 5))
-        try:
-            container = self._client.containers.create(
-                name=f"context-agent-{self.job.root.name}",
-                file_ids=[item.file_id for item in self._uploaded],
-                memory_limit=self.job.config.runtime.memory_limit,
-                expires_after={"anchor": "last_active_at", "minutes": expires_minutes},
+        # Hosted containers automatically expand recognized archives. A complete
+        # ConTeXt tree contains several thousand files and would exceed the container
+        # attachment limit before the first model turn. Prefixing the XZ stream with a
+        # private header keeps it as one opaque file. The runtime helper removes the
+        # header and extracts ConTeXt only for one compilation.
+        with tempfile.TemporaryDirectory(prefix="context-agent-upload-") as temporary:
+            context_bundle_path = Path(temporary) / "context-lmtx.ctxbundle"
+            _write_context_bundle(self.job.context_archive, context_bundle_path)
+            context_bundle = self._upload(context_bundle_path)
+
+            for path in self.direct_files:
+                self._upload(path)
+
+            expires_minutes = min(
+                60, max(20, self.job.config.limits.timeout_seconds // 60 + 5)
             )
-        except Exception as exc:
-            raise RemoteAgentError(f"failed to create hosted container: {exc}") from exc
-        self.container_id = str(container.id)
+            try:
+                container = self._client.containers.create(
+                    name=f"context-agent-{self.job.root.name}",
+                    file_ids=[item.file_id for item in self._uploaded],
+                    memory_limit=self.job.config.runtime.memory_limit,
+                    expires_after={"anchor": "last_active_at", "minutes": expires_minutes},
+                )
+            except Exception as exc:
+                raise RemoteAgentError(f"failed to create hosted container: {exc}") from exc
+            self.container_id = str(container.id)
 
-        if bundle.file_id == context_archive.file_id:  # defensive; should never happen
-            raise RemoteAgentError("job bundle and ConTeXt archive received identical file IDs")
+        if bundle.file_id == context_bundle.file_id:  # defensive; should never happen
+            raise RemoteAgentError("job bundle and ConTeXt bundle received identical file IDs")
 
     def _direct_content(self, prompt: str) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
@@ -219,6 +236,14 @@ class OpenAIHostedSession:
             with suppress(Exception):
                 self._client.files.delete(item.file_id)
 
+
+
+def _write_context_bundle(source: Path, destination: Path) -> None:
+    """Wrap an XZ archive so hosted containers do not auto-expand it on attachment."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+        output_stream.write(_CONTEXT_BUNDLE_HEADER)
+        shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
 
 def _extract_output_text(response: Any, raw: dict[str, Any]) -> str:
     direct = getattr(response, "output_text", None)

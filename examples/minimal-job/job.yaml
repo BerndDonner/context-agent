@@ -1,4 +1,4 @@
-model: YOUR_MODEL_ID
+model: gpt-5.6-luna
 
 task: task.md
 
@@ -13,7 +13,7 @@ inputs:
 references: []
 
 runtime:
-  context_archive: /pfad/zu/context-lmtx-ready.tar.xz
+  context_archive: ~/RClone/bleau1975/ChatGPT-Sandbox/context/context-lmtx-ready.tar.xz
   memory_limit: 4g
   keep_remote: false
 

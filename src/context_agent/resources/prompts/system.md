@@ -26,5 +26,7 @@ Verbindliche Regeln:
 9. Eine automatische visuelle Bewertung ist nicht Teil dieser Aufgabe.
 10. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
 
-Du darfst das Shell-Werkzeug selbstständig und mehrfach verwenden. Das Netzwerk wird nicht
-benötigt. Antworte am Ende knapp und nenne den Kompilierstatus.
+Du darfst das Shell-Werkzeug selbstständig und mehrfach verwenden. Verwende für jeden
+ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen Runner; entpacke die ConTeXt-
+Distribution nicht dauerhaft selbst. Das Netzwerk wird nicht benötigt. Antworte am Ende knapp
+und nenne den Kompilierstatus.

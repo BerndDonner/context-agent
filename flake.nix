@@ -18,6 +18,19 @@
         ];
       };
 
+      openaiLatest = pkgs.python3Packages.openai.overridePythonAttrs (_old: rec {
+        version = "2.47.0";
+
+        src = pkgs.fetchPypi {
+          pname = "openai";
+          inherit version;
+          hash = "sha256-TiBVSKzUME8jW4YgImmRLlW8iCcLFdKgUforU7kDQ6Y=";
+        };
+
+        doCheck = false;
+        pythonImportsCheck = [ "openai" ];
+      });
+
       pythonDev = import (nixos-config + "/lib/python-develop.nix");
     in
     {
@@ -25,14 +38,22 @@
         inherit pkgs;
         inputs = { inherit nixos-config nixpkgs; };
         checkInputs = [ "nixos-config" ];
+        secretSets = [ "openai" ];
         flakeLockPath = ./flake.lock;
         symbol = "🐍";
         pythonVersion = pkgs.python3;
 
         extraPackages = with pkgs; [
-          python3Packages.prompt-toolkit
+          # Laufzeitabhängigkeiten von context-agent
+          python3Packages.pyyaml
+          python3Packages.pydantic
+          openaiLatest
+
+          # Entwicklungswerkzeuge
           python3Packages.pytest
+          python3Packages.mypy
           unstable.python3Packages.ruff
+
           vscode-fhs
         ];
 

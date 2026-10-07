@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from context_agent.job import load_job
-from context_agent.openai_backend import OpenAIHostedSession, UploadedFile
+from context_agent.openai_backend import (
+    OpenAIHostedSession,
+    UploadedFile,
+    _write_context_bundle,
+)
 
 
 class FakeResponses:
@@ -104,3 +108,16 @@ def test_hosted_response_and_artifact_download(tmp_path: Path, job_factory) -> N
     downloaded = session.sync_result(destination)
     assert set(downloaded) == {"main.tex", "main.pdf", "context.log"}
     assert (destination / "main.pdf").read_bytes().startswith(b"%PDF-")
+
+
+def test_context_archive_is_wrapped_as_opaque_bundle(tmp_path: Path) -> None:
+    source = tmp_path / "context.tar.xz"
+    source.write_bytes(b"\xfd7zXZ\x00payload")
+    destination = tmp_path / "context.ctxbundle"
+
+    _write_context_bundle(source, destination)
+
+    data = destination.read_bytes()
+    assert data.startswith(b"CONTEXT_AGENT_ARCHIVE_V1\n")
+    assert data.endswith(source.read_bytes())
+    assert not data.startswith(b"\xfd7zXZ")

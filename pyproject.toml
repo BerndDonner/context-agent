@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Small agentic workflow for generating and compiling ConTeXt documents"
 readme = "README.md"
 requires-python = ">=3.13"
 authors = [{name = "Bernd Donner"}]
 dependencies = [
-  "openai>=2.53,<3",
+  "openai==2.47.0",
   "pydantic>=2.12,<3",
   "PyYAML>=6,<7",
 ]

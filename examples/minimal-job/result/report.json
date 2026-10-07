@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "model": "gpt-5.6-luna",
+  "started_at": "2026-08-06T16:10:20.405878+00:00",
+  "finished_at": "2026-08-06T16:12:23.125834+00:00",
+  "agent_turns": 1,
+  "nogo_repairs": 0,
+  "response_ids": [
+    "resp_0bb94557fac2b7b7006a74b2243a708194a2a2708cf6343941"
+  ],
+  "compile_success": true,
+  "findings": [],
+  "checker_failures": [],
+  "errors": [],
+  "usage": {
+    "input_tokens": 9892,
+    "output_tokens": 2080,
+    "total_tokens": 11972
+  },
+  "remote_container_id": "cntr_6a74b21f929881939c382182a568fdd301e03d687ff83093",
+  "artifacts": {
+    "main.tex": "/home/bernd/GitHub/context-agent/examples/minimal-job/result/main.tex",
+    "main.pdf": "/home/bernd/GitHub/context-agent/examples/minimal-job/result/main.pdf",
+    "context.log": "/home/bernd/GitHub/context-agent/examples/minimal-job/result/context.log"
+  }
+}
