@@ -22,6 +22,7 @@ class NogoContext:
     main_tex: Path
     main_pdf: Path | None
     context_log: Path | None
+    include_override: Path | None = None
 
     @property
     def result_dir(self) -> Path:
@@ -33,7 +34,7 @@ class NogoContext:
 
     @property
     def include_dir(self) -> Path:
-        return self.job.include_dir
+        return self.include_override or self.job.include_dir
 
     def read_text(self, path: str | Path, *, encoding: str = "utf-8") -> str:
         candidate = self._resolve_allowed(path)
@@ -48,7 +49,11 @@ class NogoContext:
         if not candidate.is_absolute():
             candidate = self.job.root / candidate
         candidate = candidate.resolve()
+        if self.include_override and _is_below(candidate, self.job.include_dir.resolve()):
+            candidate = self.include_override / candidate.relative_to(self.job.include_dir.resolve())
         allowed_roots = (self.job.root.resolve(),)
+        if self.include_override:
+            allowed_roots += (self.include_override.resolve(),)
         if not any(_is_below(candidate, root) for root in allowed_roots):
             raise ValueError(f"path outside job directory: {candidate}")
         return candidate
@@ -171,6 +176,7 @@ def findings_as_prompt(findings: list[NogoFinding]) -> str:
             "/mnt/data/work/job/result/main.tex",
             "/mnt/data/work/job/result/main.pdf",
             "/mnt/data/work/job/result/context.log",
+            "bash /mnt/data/work/runtime/collect-includes.sh /mnt/data/work/job",
         ]
     )
     return "\n".join(lines)

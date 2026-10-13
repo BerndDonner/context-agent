@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-agent"
-version = "0.1.1"
+version = "0.2.0"
 description = "Small agentic workflow for generating and compiling ConTeXt documents"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -13,6 +13,7 @@ dependencies = [
   "openai==2.47.0",
   "pydantic>=2.12,<3",
   "PyYAML>=6,<7",
+  "PyMuPDF>=1.24,<2",
 ]
 
 [project.optional-dependencies]

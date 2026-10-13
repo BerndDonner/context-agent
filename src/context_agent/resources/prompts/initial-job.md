@@ -21,10 +21,15 @@ vor, ohne nach Bestätigung zu fragen:
    Der Runner entpackt ConTeXt nur für diesen einen Lauf und räumt es auch bei einem Fehler
    danach wieder auf. Rufe ihn bei jeder Reparaturrunde erneut auf. Repariere Compiler-, Lua-,
    MetaPost-, Include- und Pfadfehler selbstständig.
-6. Stelle am Ende mindestens diese Dateien bereit:
+6. Nach dem Kompilieren erzeuge immer einen Include-Snapshot:
+   `bash /mnt/data/work/runtime/collect-includes.sh /mnt/data/work/job`
+   Wenn du Helfer in `job/include/` ergänzt oder überarbeitest, benutze sie bereits beim
+   Kompilieren. Sie werden erst nach erfolgreicher Abnahme zurückgespielt.
+7. Stelle am Ende mindestens diese Dateien bereit:
    - `/mnt/data/work/job/result/main.tex`
    - `/mnt/data/work/job/result/main.pdf`
    - `/mnt/data/work/job/result/context.log`
+   - `/mnt/data/work/job/result/include-snapshot.tar.gz`
 
 Konfigurierte Eingaben und Referenzen:
 {attachments}

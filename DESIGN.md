@@ -1,6 +1,6 @@
-# context-agent 0.1 — Design, Architektur und Übergabe
+# context-agent 0.2 — Design, Architektur und Übergabe
 
-**Status:** Implementierter Stand von Version 0.1  
+**Status:** Implementierter Stand von Version 0.2
 **Zweck:** Dieses Dokument ist die maßgebliche Übergabeunterlage für `context-agent/`. Wird es
 in einer späteren Unterhaltung zusammen mit dem Quellcode bereitgestellt, sollen Ziele,
 Randbedingungen, Architektur und bewusste Nicht-Ziele ohne den ursprünglichen Gesprächsverlauf
@@ -34,7 +34,7 @@ ConTeXt wirklich ausführen
             ↓
 Fehler lesen und selbst reparieren
             ↓
-lokale No-go-Prüfer
+lokale No-go-Prüfer und optionale Reproduktionsprüfung
             ↓
 Befunde an denselben Agenten zurückgeben
             ↓
@@ -51,10 +51,9 @@ kein allgemeines Agenten-Framework.
 `context-agent` ist ein kleines Python-CLI-Programm, das einen modellgesteuerten Agenten für die
 Erstellung kompilierter ConTeXt-LMTX-Dokumente orchestriert.
 
-Die ursprünglich genannte Zielgröße von ungefähr 1000 LOC bezeichnet eine Größenordnung, keine
-harte Grenze. Der implementierte Python-Anwendungscode liegt bei ungefähr 1360 Zeilen; mit Tests
-liegt das Projekt bei ungefähr 1770 Python-Zeilen. Das ist für Version 0.1 akzeptiert. Ein erster
-Stand mit etwa 10 000 LOC wäre dagegen zu groß und zu infrastrukturlastig gewesen.
+Die ursprünglich genannte Zielgröße von ungefähr 1000 LOC bezeichnet eine Größenordnung,
+keine harte Grenze. Die Erweiterung fügt einen begrenzten Orchestrator für sichere
+Include-Übernahme und einen optionalen Reproduktionsreview hinzu.
 
 Leitprinzipien:
 
@@ -70,7 +69,7 @@ Leitprinzipien:
 
 ### 3.1 Modellgesteuerter Agent
 
-Version 0.1 verwendet die agentischere Variante:
+Version 0.2 verwendet die agentischere Variante:
 
 > Das Modell arbeitet innerhalb einer frischen Hosted-Shell-Sandbox selbstständig. Es liest die
 > Dateien, richtet ConTeXt ein, erzeugt `main.tex`, kompiliert, untersucht Fehler und repariert
@@ -110,12 +109,10 @@ Der Agent in der Sandbox:
 
 ---
 
-## 4. Bewusste Nicht-Ziele von Version 0.1
+## 4. Bewusste Nicht-Ziele (Stand 0.2)
 
 Nicht implementiert sind:
 
-- automatische visuelle Bewertung des erzeugten PDFs,
-- automatisches Rendern der Ausgabeseiten zur Layoutkritik,
 - ästhetische Optimierungsschleifen,
 - Multi-Agent-System,
 - Langzeitgedächtnis,
@@ -129,8 +126,8 @@ Nicht implementiert sind:
 - Prozessisolation für die lokalen No-go-Skripte,
 - pixelgenauer Vergleich mit Referenz-PDFs.
 
-Die visuelle Endkontrolle übernimmt der Anwender. Beobachtete wiederkehrende Fehler können später
-als No-go-Checker formalisiert werden.
+Die optionale Reproduktionsprüfung überprüft Ausgabeseiten visuell und inhaltlich durch
+Modellaufrufe, ersetzt jedoch **keine** letztverbindliche menschliche Endkontrolle.
 
 ---
 
@@ -503,15 +500,16 @@ Shell-Kommandos.
 
 ## 11. Ergebnisabnahme
 
-Automatisch verlangt werden ausschließlich:
+Automatisch verlangt werden:
 
-1. `main.tex` ist vorhanden,
-2. `main.pdf` ist vorhanden und beginnt mit der PDF-Signatur `%PDF-`,
-3. `context.log` ist vorhanden,
-4. alle No-go-Checker laufen ohne internen Fehler,
-5. alle No-go-Checker liefern keine Befunde mehr.
+1. `main.tex`, `main.pdf`, `context.log` und ein gültiges `include-snapshot.tar.gz`,
+2. ein PDF mit `%PDF-`-Signatur (keine vollständige PDF-Syntaxprüfung),
+3. erfolgreiche lokale No-go-Checker ohne Befunde,
+4. wenn `review.reproduction: true`, eine vollständige modellgestützte visuelle und
+   inhaltliche Reproduktionsprüfung ohne sichere Befunde,
+5. erfolgreiche Include-Übernahme erst nach bestandener Prüfung.
 
-Es findet **keine automatische visuelle Abnahme** statt.
+Eine vollautomatische **inhaltliche Garantie** oder ästhetische Abnahme findet nicht statt.
 
 ### 11.1 Letzten kompilierbaren Stand bewahren
 
@@ -528,7 +526,7 @@ verfügbar. Solange noch keine vollständige Fassung existiert, werden vorhanden
 
 ### 12.1 Zweck
 
-No-go-Regeln werden nicht vorab erfunden. Das Verzeichnis ist in Version 0.1 absichtlich leer.
+No-go-Regeln werden nicht vorab erfunden. Das mitgelieferte Verzeichnis bleibt leer.
 Wenn ein erzeugtes Dokument ein wiederkehrendes, objektivierbares Problem zeigt, schreibt der
 Anwender einen Python-Checker. Der Checker wird ab dann bei allen Jobs ausgeführt.
 
@@ -795,7 +793,7 @@ Python-SDKs.
 - API-Schlüssel werden nicht in YAML oder Projektdateien gespeichert; das offizielle SDK liest die
   normale Umgebungsvariable.
 
-Version 0.1 versucht nicht, bösartige eigene Templates oder bösartige eigene No-go-Skripte zu
+Version 0.2 versucht nicht, bösartige eigene Templates oder bösartige eigene No-go-Skripte zu
 sandboxen. Der Workflow ist für vom Anwender kontrollierte Jobs ausgelegt.
 
 ---
@@ -809,11 +807,10 @@ beauftragte Schritte sind:
 2. Auswahl von Checkern nach Dokumenttyp, sobald genügend Checker existieren,
 3. Wiederverwendung eines vorbereiteten Containers zur Kosten- und Zeitersparnis,
 4. lokale oder API-seitige Dokumentensuche bei zu vielen Referenzen,
-5. optionale visuelle Ausgabeprüfung,
-6. detailliertere PDF-Validierung,
-7. Aufbewahrung benannter Zwischenstände bei schwierigen Reparaturen.
+5. detailliertere PDF-Validierung,
+6. Aufbewahrung benannter Zwischenstände bei schwierigen Reparaturen.
 
-Diese Punkte sind keine Zusagen für Version 0.1.
+Diese Punkte sind nicht Bestandteil von Version 0.2.
 
 ---
 
@@ -836,7 +833,8 @@ Die wichtigsten unveränderlichen Entscheidungen lauten:
 - `include/` enthält Bilder und Code gemeinsam.
 - Eingaben besitzen getrennte Rollen und Änderungs-Policies.
 - Alle Referenzen werden zunächst bei jedem Job übertragen.
-- Keine automatische visuelle Endkontrolle in Version 0.1.
+- Optionale modellgestützte Reproduktionsprüfung (`review.reproduction: true`),
+  aber weiterhin keine automatische ästhetische Verbesserung.
 - No-go-Regeln sind beliebig komplexe lokale Python-Skripte, zunächst leer und momentan immer
   vollständig aktiv.
 - No-go-Befunde werden automatisch durch denselben Agenten zu reparieren versucht.
@@ -850,3 +848,50 @@ erkennbares Archiv. Erkannte Archive werden beim Bereitstellen für den Containe
 der vollständige ConTeXt-Baum enthält mehr als 6.000 Dateien. Der Runtime-Helper entfernt den
 privaten Header, entpackt ConTeXt nur für genau einen Übersetzungslauf und löscht den temporären
 Baum auch nach einem Compilerfehler wieder.
+
+
+## 13. Erweiterung 0.2: Git-nativer Include-Roundtrip
+
+- In der Sandbox darf der Agent `job/include/` erweitern und bestehende Dateien ändern.
+- Nach **jedem** Übersetzungslauf/Repair erstellt `collect-includes.sh` ein TAR-Snapshot.
+- Die lokale Seite verwirft Archive mit `..`, absoluten Pfaden, Links, Duplikaten
+  oder übermäßig großen Inhalten. Fehlende ursprüngliche Dateien gelten als Fehler.
+- No-go-Checker erhalten die Include-Fassung aus dem heruntergeladenen Snapshot,
+  nicht eine veraltete lokale Fassung.
+- Erst nach bestandenen Prüfungen kommt es zum Git-Working-Tree-Writeback.
+  Die vorhandenen Bytes werden gegen die Ausgangsfassung geprüft; ein vorhandener
+  uncommitteter Git-Stand blockiert konkurrierende Änderungen.
+- Es gibt keine automatische Git-Operation, weder Commit noch Push.
+- Ist der Job fehlgeschlagen, wird nichts nach `include/` zurückgespielt.
+- Alle Änderungen stehen danach zur manuellen Prüfung via `git diff` bereit.
+
+## 14. Erweiterung 0.2: Reproduktionsprüfung
+
+Aktivierung mit `review.reproduction: true`. Standardmäßig aus für Aufgaben, die
+bewusst neue Inhalte erstellen. Der lokale Renderer PyMuPDF erzeugt JPEGs aus allen
+PDF-Ausgabeseiten. Jede Gruppe von `review.pages_per_batch` Seiten wird vom Modell
+in einem reinen Leseaufruf verglichen: `tool_choice=none` verbietet Shell-Änderungen.
+
+Die Prüfung sucht **nur** eindeutige Reproduktionsfehler gegenüber den Eingaben:
+fehlende oder veränderte Angaben, Zahlen, Formeln, Lösungen und Diagramme oder
+objektiv unleserliche beziehungsweise abgeschnittene Elemente. Der Kopf kommt
+weiterhin aus dem ConTeXt-Template. Seitenumbrüche, Leerraum und zweifelhafte
+Original-Typografie sind keine Fehler.
+
+Die Review-Antwort ist ein JSON-Bericht. Reparaturen gibt es nur bei Befunden
+mit `confidence >= 0.85`. Unsicherheiten werden protokolliert, nicht automatisch
+repariert. Ein beschädigter JSON-Review ist ein Fehlschlag, kein Erfolg.
+
+Inhaltliche Reproduktionsbefunde sind so als zusätzliche **modellgestützte No-go-Checker**
+implementiert; die vorhandenen lokalen deterministischen Python-Checker bleiben
+unverändert benutzbar. Keine fachspezifischen Regeln sind einprogrammiert.
+
+Jede Modellrunde, einschließlich reiner Sichtprüfung, zählt zu
+`limits.max_agent_turns`; `review.max_repairs` begrenzt die gezielte Reproduktion.
+Abbruch wegen Seitenlimit, Modellbudget oder Review-Fehler bedeutet einen
+fehlgeschlagenen Lauf, niemals stillschweigende Annahme eines perfekten Ergebnisses.
+
+Ein echter kostenpflichtiger Hosted-Shell-API-End-to-End-Lauf ist ausstehend.
+Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die Orchestratorlogik;
+die `plotmod-api.md`-Beispiele wurden unabhängig mit dem gelieferten ConTeXt-LMTX
+real kompiliert.

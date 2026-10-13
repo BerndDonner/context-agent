@@ -26,6 +26,8 @@ class AgentSession(Protocol):
 
     def sync_result(self, destination: Path) -> dict[str, Path]: ...
 
+    def review_pages(self, prompt: str, previous_response_id: str, pages: tuple[Path, ...]) -> AgentTurn: ...
+
     def close(self) -> None: ...
 
 
@@ -42,6 +44,7 @@ class OpenAIHostedSession:
         "main.tex": "/mnt/data/work/job/result/main.tex",
         "main.pdf": "/mnt/data/work/job/result/main.pdf",
         "context.log": "/mnt/data/work/job/result/context.log",
+        "include-snapshot.tar.gz": "/mnt/data/work/job/result/include-snapshot.tar.gz",
     }
 
     def __init__(
@@ -146,9 +149,17 @@ class OpenAIHostedSession:
                 content.append({"type": "input_file", "file_id": file_id})
         return content
 
-    def _response(self, *, prompt: str, previous_response_id: str | None) -> AgentTurn:
+    def _response(
+        self, *, prompt: str, previous_response_id: str | None,
+        review_pages: tuple[Path, ...] = (),
+    ) -> AgentTurn:
         if self.container_id is None:
             raise RemoteAgentError("hosted container is not available")
+
+        review_content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        for page in review_pages:
+            uploaded = self._upload(page)
+            review_content.append({"type": "input_image", "file_id": uploaded.file_id, "detail": "high"})
 
         kwargs: dict[str, Any] = {
             "model": self.job.config.model,
@@ -158,7 +169,7 @@ class OpenAIHostedSession:
                     "role": "user",
                     "content": self._direct_content(prompt)
                     if previous_response_id is None
-                    else [{"type": "input_text", "text": prompt}],
+                    else review_content,
                 }
             ],
             "tools": [
@@ -170,7 +181,7 @@ class OpenAIHostedSession:
                     },
                 }
             ],
-            "tool_choice": "auto",
+            "tool_choice": "none" if review_pages else "auto",
             "parallel_tool_calls": False,
             "max_output_tokens": self.job.config.limits.max_output_tokens,
             "store": True,
@@ -199,6 +210,12 @@ class OpenAIHostedSession:
 
     def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
         return self._response(prompt=prompt, previous_response_id=previous_response_id)
+
+    def review_pages(self, prompt: str, previous_response_id: str, pages: tuple[Path, ...]) -> AgentTurn:
+        if not pages:
+            raise ValueError('review requires page images')
+        return self._response(prompt=prompt, previous_response_id=previous_response_id,
+                              review_pages=pages)
 
     def sync_result(self, destination: Path) -> dict[str, Path]:
         if self.container_id is None:

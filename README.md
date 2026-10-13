@@ -1,4 +1,4 @@
-# context-agent 0.1
+# context-agent 0.2
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -11,7 +11,7 @@ No-go-Prüfung und sendet konkrete Befunde zur Reparatur an denselben Agenten zu
 
 Die verbindlichen Designentscheidungen stehen in [`DESIGN.md`](DESIGN.md).
 
-## Umfang von Version 0.1
+## Umfang von Version 0.2
 
 Enthalten sind:
 
@@ -24,9 +24,14 @@ Enthalten sind:
 - agentische Compiler-Reparaturen,
 - beliebig komplexe lokale Python-No-go-Checker,
 - automatische No-go-Reparaturrunden,
-- `main.tex`, `main.pdf`, `context.log`, `report.json` und `transcript.jsonl`.
+- optional aktivierbare **visuelle und inhaltliche Reproduktionsprüfung** mit automatischer
+  Reparaturschleife (keine typografische oder fachliche Verbesserung),
+- Git-kompatibler **Include-Roundtrip**: neue/geänderte Dateien in `include/` werden erst
+  nach erfolgreicher Abnahme zurückgeschrieben, ohne Commit oder Push,
+- `main.tex`, `main.pdf`, `context.log`, `include-snapshot.tar.gz`,
+  `report.json` und `transcript.jsonl`.
 
-Nicht enthalten sind automatische visuelle PDF-Bewertung, RAG, Vektordatenbank,
+Nicht enthalten sind typografische Optimierung, RAG, Vektordatenbank,
 Multi-Agent-System und eine Weboberfläche.
 
 ## Installation
@@ -95,8 +100,8 @@ template:
 
 inputs:
   - path: input/angabe.pdf
-    role: statement
-    policy: immutable
+    role: recreate
+    policy: verbatim
 
 references:
   - references/mathincontext-paper.pdf
@@ -107,10 +112,17 @@ runtime:
   keep_remote: false
 
 limits:
-  max_agent_turns: 6
+  max_agent_turns: 16  # ausreichend für mehrere Bild-Batches und Reparaturen
   max_nogo_repairs: 3
   timeout_seconds: 900
   max_output_tokens: 12000
+
+# Nur für originalgetreue Reproduktionsaufträge einschalten.
+review:
+  reproduction: true
+  max_repairs: 2
+  max_pages: 40
+  pages_per_batch: 4
 ```
 
 ### Rollen
@@ -140,16 +152,49 @@ Ein erfolgreicher Lauf schreibt nach `result/`:
 main.tex
 main.pdf
 context.log
+include-snapshot.tar.gz
 report.json
 transcript.jsonl
 ```
+
+`review.reproduction` ist standardmäßig **ausgeschaltet**. Für einen Reproduktionsjob
+`true` setzen. Jede Ausgabe-Seite wird mit PyMuPDF als JPEG gerendert, als Bild an das
+Modell übergeben und gegen die ursprünglichen Eingaben geprüft. Pro Modellaufruf werden
+`pages_per_batch` Seiten betrachtet. Der Reviewer **kann keine Shell-Befehle ausführen**.
+Nur konkret nachweisbare Abweichungen mit hoher Sicherheit werden repariert; Zweifel
+landen separat in `report.json` unter `review_uncertainties`. Gedruckte Lösungen und
+sonstige möglicherweise fachlich fragwürdige Details der Quelle bleiben erhalten.
+Seitenumbrüche, Leerraum und Typografie werden nicht optimiert. Eine automatische
+Prüfung kann jedoch keine 100-prozentige Korrektheit garantieren.
+
+`max_agent_turns` zählt **auch die reinen Review-Aufrufe**. Bei 11 Seiten und vier
+Seiten pro Review-Aufruf werden drei Modellaufrufe pro Prüfdurchgang benötigt;
+bei zwei Reparaturrunden sind mindestens zwölf Aufrufe sinnvoll. Ist das Budget
+erschöpft, gilt die Prüfung als fehlgeschlagen, nicht als bestanden.
+
+### Include-Roundtrip und Git
+
+Der Container erstellt nach jedem erfolgreichen Compile/Repair mit
+`runtime/collect-includes.sh` einen `include-snapshot.tar.gz`. Der Orchestrator
+validiert den Inhalt und verwendet zunächst ausschließlich die Sandbox-Dateien.
+Erst nach erfolgreicher No-go- und Reproduktionsprüfung werden Ergänzungen und
+Änderungen in `job/include/` übertragen. Der Bericht listet sie unter
+`include_changes`. Vorhandene Dateien dürfen nicht stillschweigend gelöscht werden;
+Links und unsichere Archivpfade werden abgewiesen. Beim Schreiben werden
+Git-Verschmutzung vor dem Start und zwischenzeitliche Änderungen erkannt.
+Bestehende uncommittete Include-Dateien werden **nicht überschrieben**. Es gibt
+weder automatische Git-Commits noch Pushes; danach selbst `git diff` und
+`git status` prüfen. Bei fehlgeschlagenen Prüfungen bleibt `job/include/` unverändert.
+
+`result/` enthält weiterhin auch bei gescheiterten Checks das letzte vollständige
+Artefaktset zur Diagnose. Das heißt nicht, dass dieses Ergebnis abgenommen wurde.
 
 Der Exitcode ist `0` bei vollständigem Erfolg, `1` bei einem ausgeführten, aber nicht
 abgenommenen Job und `2` bei ungültiger Konfiguration.
 
 ## No-go-Checker
 
-Version 0.1 führt immer alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
+Version 0.2 führt weiterhin alle alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
 `nogo_directory` wird zuerst `job/nogos/` und anschließend ein projektweites `nogos/`
 gesucht. Das mitgelieferte Verzeichnis ist absichtlich leer.
 

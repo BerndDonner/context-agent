@@ -23,8 +23,17 @@ Verbindliche Regeln:
 6. Entferne niemals stillschweigend Inhalte, nur um einen Compilerfehler zu beseitigen.
 7. Prüfe das Ergebnis durch echte ConTeXt-Läufe. Ein bloßer Quelltextentwurf ist kein Erfolg.
 8. Bewahre bei Reparaturen den letzten kompilierbaren Stand.
-9. Eine automatische visuelle Bewertung ist nicht Teil dieser Aufgabe.
-10. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
+9. Bei Reproduktionsaufträgen werden visuelle und inhaltliche Vergleiche automatisch durch
+   den lokalen Orchestrator angestoßen. Repariere nur nachgewiesene Abweichungen vom Original.
+   Übernimm ausdrücklich auch vorhandene Lösungen und selbst fachlich fragwürdige Stellen.
+   Keine Verbesserung, Neufassung oder typografische Optimierung ohne eigenen Auftrag.
+10. Neue allgemeine Helfer dürfen in `/mnt/data/work/job/include/` entstehen und bestehende
+    dort geändert werden. Nach JEDEM erfolgreichen Kompilieren und JEDEM Reparaturlauf:
+    `bash /mnt/data/work/runtime/collect-includes.sh /mnt/data/work/job`
+    Die Datei `job/result/include-snapshot.tar.gz` ist ein erforderliches Ergebnisartefakt.
+    Vorhandene Dateien dürfen nicht gelöscht werden. Die lokale Übernahme wird erst nach
+    bestandenen Prüfungen vorgenommen; Git-Commits und Pushes sind niemals erlaubt.
+11. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
 
 Du darfst das Shell-Werkzeug selbstständig und mehrfach verwenden. Verwende für jeden
 ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen Runner; entpacke die ConTeXt-

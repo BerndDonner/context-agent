@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from context_agent.models import AgentTurn, ResolvedJob
+from context_agent.include_sync import make_snapshot
 from context_agent.openai_backend import AgentSession
 from context_agent.workflow import run_job
 
@@ -39,6 +40,8 @@ class FakeSession(AgentSession):
         copied: dict[str, Path] = {}
         destination.mkdir(exist_ok=True)
         for source in self.remote.iterdir():
+            if not source.is_file():
+                continue
             target = destination / source.name
             shutil.copy2(source, target)
             copied[source.name] = target
@@ -50,6 +53,7 @@ class FakeSession(AgentSession):
     def _write_pdf_and_log(self) -> None:
         (self.remote / "main.pdf").write_bytes(b"%PDF-1.7\n%%EOF\n")
         (self.remote / "context.log").write_text("successful run", encoding="utf-8")
+        make_snapshot(self.job.include_dir, self.remote / "include-snapshot.tar.gz")
 
     @staticmethod
     def _turn(response_id: str, text: str) -> AgentTurn:
@@ -138,3 +142,126 @@ def check(context):
     assert report.status == "failed"
     assert (job_root / "result" / "main.pdf").read_bytes().startswith(b"%PDF-")
     assert "BAD" in (job_root / "result" / "main.tex").read_text()
+
+
+class ReviewSession(FakeSession):
+    """Visual review reports a missing printed solution, then accepts the repair."""
+
+    def __init__(self, job: ResolvedJob, *, always_fail: bool = False) -> None:
+        super().__init__(job)
+        self.review_calls = 0
+        self.always_fail = always_fail
+
+    def _write_pdf_and_log(self) -> None:
+        import fitz
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), 'Aufgabe 1: Lösung 42')
+        doc.save(self.remote / 'main.pdf')
+        doc.close()
+        (self.remote / 'context.log').write_text('successful run')
+        make_snapshot(self.job.include_dir, self.remote / 'include-snapshot.tar.gz')
+
+    def review_pages(self, prompt: str, previous_response_id: str,
+                     pages: tuple[Path, ...]) -> AgentTurn:
+        assert 'Original' in prompt
+        assert pages and pages[0].read_bytes().startswith(b'\xff\xd8')
+        self.review_calls += 1
+        if self.review_calls == 1 or self.always_fail:
+            text = ('{"findings":[{"type":"content","output_page":1,'
+                    '"source_page":1,"message":"Originale Lösung fehlt",'
+                    '"confidence":0.99}],"uncertainties":[]}')
+        else:
+            text = '{"findings":[],"uncertainties":[]}'
+        return self._turn(f'v{self.review_calls}', text)
+
+    def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
+        self.followups.append(prompt)
+        (self.remote / 'main.tex').write_text('reproduced solution')
+        self._write_pdf_and_log()
+        return self._turn(f'r{len(self.followups)+1}', 'repaired')
+
+
+def test_reproduction_review_repairs_and_commits_includes(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path, max_turns=8)
+    with (job_root / 'job.yaml').open('a') as f:
+        f.write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+    captured: dict[str, ReviewSession] = {}
+
+    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
+        s = ReviewSession(job)
+        captured['session'] = s
+        return s
+
+    report = run_job(job_root, session_factory=factory)
+    assert report.status == 'success', report.errors
+    assert report.review_repairs == 1
+    assert report.agent_turns == 4
+    assert captured['session'].review_calls == 2
+
+
+def test_reproduction_fail_does_not_change_includes(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path, max_turns=8)
+    (job_root / 'include/plotmod.lua').write_text('original')
+    with (job_root / 'job.yaml').open('a') as f:
+        f.write('\nreview:\n  reproduction: true\n  max_repairs: 1\n')
+
+    class FailingSession(ReviewSession):
+        def _write_pdf_and_log(self) -> None:
+            (self.job.include_dir / 'plotmod.lua').write_text('original')
+            super()._write_pdf_and_log()
+
+    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
+        return FailingSession(job, always_fail=True)
+
+    report = run_job(job_root, session_factory=factory)
+    assert report.status == 'failed'
+    assert report.review_findings
+    assert (job_root / 'include/plotmod.lua').read_text() == 'original'
+
+
+def test_remote_include_is_applied_only_after_success(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path)
+    (job_root / 'include/plotmod.lua').write_text('original')
+
+    class IncludeSession(FakeSession):
+        def _write_pdf_and_log(self) -> None:
+            super()._write_pdf_and_log()
+            remote_includes = self.remote / 'sandbox-include'
+            remote_includes.mkdir(exist_ok=True)
+            (remote_includes / 'plotmod.lua').write_text('new content')
+            (remote_includes / 'extra.lua').write_text('additional helper')
+            make_snapshot(remote_includes, self.remote / 'include-snapshot.tar.gz')
+
+    report = run_job(job_root, session_factory=lambda job, bundle, direct, system: IncludeSession(job))
+    assert report.status == 'success', report.errors
+    assert report.include_changes == ['extra.lua', 'plotmod.lua']
+    assert (job_root / 'include/plotmod.lua').read_text() == 'new content'
+    assert (job_root / 'include/extra.lua').read_text() == 'additional helper'
+
+
+def test_remote_includes_not_applied_when_review_fails(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path, max_turns=6)
+    (job_root / 'include/plotmod.lua').write_text('original')
+    with (job_root / 'job.yaml').open('a') as f:
+        f.write('\nreview:\n  reproduction: true\n  max_repairs: 0\n')
+
+    class FailedIncludeSession(ReviewSession):
+        def _write_pdf_and_log(self) -> None:
+            super()._write_pdf_and_log()
+            remote_includes = self.remote / 'sandbox-include'
+            remote_includes.mkdir(exist_ok=True)
+            (remote_includes / 'plotmod.lua').write_text('unaudited change')
+            make_snapshot(remote_includes, self.remote / 'include-snapshot.tar.gz')
+
+    report = run_job(job_root, session_factory=lambda job, bundle, direct, system:
+                     FailedIncludeSession(job, always_fail=True))
+    assert report.status == 'failed'
+    assert (job_root / 'include/plotmod.lua').read_text() == 'original'

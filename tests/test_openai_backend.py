@@ -33,12 +33,13 @@ class FakeResponses:
 
 class FakeContent:
     def retrieve(self, file_id: str, *, container_id: str) -> Any:
-        assert file_id in {"cfile-tex", "cfile-pdf", "cfile-log"}
+        assert file_id in {"cfile-tex", "cfile-pdf", "cfile-log", "cfile-includes"}
         assert container_id == "container-1"
         payload = {
             "cfile-tex": b"\\starttext test \\stoptext",
             "cfile-pdf": b"%PDF-1.7\n",
             "cfile-log": b"success",
+            "cfile-includes": b"placeholder",
         }[file_id]
         return SimpleNamespace(read=lambda: payload)
 
@@ -59,6 +60,11 @@ class FakeContainerFiles:
             SimpleNamespace(
                 id="cfile-pdf",
                 path="/mnt/data/work/job/result/main.pdf",
+                created_at=3,
+            ),
+            SimpleNamespace(
+                id="cfile-includes",
+                path="/mnt/data/work/job/result/include-snapshot.tar.gz",
                 created_at=3,
             ),
             SimpleNamespace(
@@ -108,7 +114,7 @@ def test_hosted_response_and_artifact_download(tmp_path: Path, job_factory) -> N
 
     destination = tmp_path / "download"
     downloaded = session.sync_result(destination)
-    assert set(downloaded) == {"main.tex", "main.pdf", "context.log"}
+    assert set(downloaded) == {"main.tex", "main.pdf", "context.log", "include-snapshot.tar.gz"}
     assert (destination / "main.pdf").read_bytes().startswith(b"%PDF-")
 
 
@@ -162,3 +168,26 @@ def test_create_client_requires_openai_api_key(
         assert "OPENAI_API_KEY is not set" in str(exc)
     else:
         raise AssertionError("missing OPENAI_API_KEY should fail")
+
+
+def test_hosted_review_sends_images_but_disallows_shell(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job = load_job(job_factory(tmp_path))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.bundle_path = tmp_path / 'bundle.tar.gz'
+    session.direct_files = ()
+    session.system_prompt = 'system'
+    session.container_id = 'container-1'
+    session._uploaded = []
+    session._client = FakeClient()
+    image = tmp_path / 'page.jpg'
+    image.write_bytes(b'fake-jpeg')
+    session._upload = lambda path: UploadedFile(path, 'file-page-1')  # type: ignore[method-assign]
+    result = session.review_pages('pure review', 'previous-1', (image,))
+    assert result.response_id == 'response-1'
+    request = session._client.responses.calls[0]
+    assert request['tool_choice'] == 'none'
+    assert request['previous_response_id'] == 'previous-1'
+    assert request['input'][0]['content'][1] == {
+        'type': 'input_image', 'file_id': 'file-page-1', 'detail': 'high',
+    }

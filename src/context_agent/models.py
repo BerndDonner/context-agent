@@ -54,6 +54,16 @@ class LimitsSpec(BaseModel):
     max_output_tokens: int = Field(default=12000, ge=1000, le=100000)
 
 
+class ReviewSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Disabled for jobs that create new content rather than reproduce a reference.
+    reproduction: bool = False
+    max_repairs: int = Field(default=2, ge=0, le=10)
+    max_pages: int = Field(default=40, ge=1, le=200)
+    pages_per_batch: int = Field(default=4, ge=1, le=8)
+
+
 class JobConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -64,6 +74,7 @@ class JobConfig(BaseModel):
     references: list[str] = Field(default_factory=list)
     runtime: RuntimeSpec
     limits: LimitsSpec = Field(default_factory=LimitsSpec)
+    review: ReviewSpec = Field(default_factory=ReviewSpec)
     nogo_directory: str | None = None
 
     @field_validator("model", "task")
@@ -144,6 +155,7 @@ class ArtifactState:
     main_tex: Path | None
     main_pdf: Path | None
     context_log: Path | None
+    include_snapshot: Path | None = None
 
     @property
     def valid_pdf(self) -> bool:
@@ -168,6 +180,10 @@ class RunReport:
     finished_at: datetime | None = None
     agent_turns: int = 0
     nogo_repairs: int = 0
+    review_repairs: int = 0
+    review_findings: list[NogoFinding] = field(default_factory=list)
+    review_uncertainties: list[str] = field(default_factory=list)
+    include_changes: list[str] = field(default_factory=list)
     response_ids: list[str] = field(default_factory=list)
     compile_success: bool = False
     findings: list[NogoFinding] = field(default_factory=list)
@@ -191,6 +207,10 @@ class RunReport:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "agent_turns": self.agent_turns,
             "nogo_repairs": self.nogo_repairs,
+            "review_repairs": self.review_repairs,
+            "review_findings": [f.as_dict() for f in self.review_findings],
+            "review_uncertainties": self.review_uncertainties,
+            "include_changes": self.include_changes,
             "response_ids": self.response_ids,
             "compile_success": self.compile_success,
             "findings": [finding.as_dict() for finding in self.findings],
