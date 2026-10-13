@@ -7,9 +7,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol, cast
+from typing import Callable, Protocol, cast
 
-from context_agent.context_math import check as check_context_math
 from context_agent.models import (
     NogoCheckerFailure,
     NogoFinding,
@@ -24,6 +23,7 @@ class NogoContext:
     main_pdf: Path | None
     context_log: Path | None
     include_override: Path | None = None
+    remote_lint: Callable[[str], list[NogoFinding]] | None = None
 
     @property
     def result_dir(self) -> Path:
@@ -89,37 +89,49 @@ def _load_module(path: Path, unique_name: str) -> ModuleType:
 
 
 def load_checkers(directory: Path | None) -> tuple[list[LoadedChecker], list[NogoCheckerFailure]]:
-    if directory is None or not directory.is_dir():
-        return [], []
+    """Load mandatory packaged checkers plus optional job-specific checkers.
 
+    Every checker uses the same regular plugin interface. Missing mandatory
+    checker files are a fatal loading failure rather than a silent no-op.
+    """
+    builtin = Path(__file__).resolve().parent / "resources" / "nogos"
+    directories = [builtin]
+    if directory is not None and directory.resolve() != builtin.resolve():
+        directories.append(directory)
     loaded: list[LoadedChecker] = []
     failures: list[NogoCheckerFailure] = []
-    directory_string = str(directory.resolve())
-    sys.path.insert(0, directory_string)
-    try:
-        for index, path in enumerate(sorted(directory.glob("*.py"))):
-            if path.name.startswith("_"):
-                continue
-            try:
-                module = _load_module(path, f"context_agent_user_nogo_{index}_{path.stem}")
-                check = getattr(module, "check", None)
-                if not callable(check):
-                    raise TypeError("module does not export callable check(context)")
-                loaded.append(LoadedChecker(path.stem, path, cast(Checker, check)))
-            except Exception as exc:
-                failures.append(
-                    NogoCheckerFailure(
-                        checker=path.name,
-                        message=str(exc),
-                        traceback=traceback.format_exc(),
-                    )
-                )
-    finally:
-        if sys.path and sys.path[0] == directory_string:
-            sys.path.pop(0)
-        else:
-            with suppress(ValueError):
-                sys.path.remove(directory_string)
+    names: set[str] = set()
+    for current in directories:
+        if not current.is_dir():
+            failures.append(NogoCheckerFailure(
+                checker=str(current), message="No-go directory missing", traceback=""))
+            continue
+        directory_string = str(current.resolve())
+        sys.path.insert(0, directory_string)
+        try:
+            for index, path in enumerate(sorted(current.glob("*.py"))):
+                if path.name.startswith("_"):
+                    continue
+                if path.stem in names:
+                    failures.append(NogoCheckerFailure(
+                        checker=path.name, message="Duplicate no-go checker name", traceback=""))
+                    continue
+                try:
+                    module = _load_module(path, f"context_agent_nogo_{len(loaded)}_{index}_{path.stem}")
+                    check = getattr(module, "check", None)
+                    if not callable(check):
+                        raise TypeError("module does not export callable check(context)")
+                    loaded.append(LoadedChecker(path.stem, path, cast(Checker, check)))
+                    names.add(path.stem)
+                except Exception as exc:
+                    failures.append(NogoCheckerFailure(
+                        checker=path.name, message=str(exc), traceback=traceback.format_exc()))
+        finally:
+            if sys.path and sys.path[0] == directory_string:
+                sys.path.pop(0)
+            else:
+                with suppress(ValueError):
+                    sys.path.remove(directory_string)
     return loaded, failures
 
 
@@ -129,9 +141,7 @@ def run_checkers(
     findings: list[NogoFinding] = []
     failures: list[NogoCheckerFailure] = []
 
-    # Mandatory conventions are independent of optional job-specific checkers.
-    builtin = LoadedChecker("context-math", Path(__file__), check_context_math)
-    for checker in [builtin, *checkers]:
+    for checker in checkers:
         try:
             raw_findings = checker.check(context)
             if not isinstance(raw_findings, list):

@@ -23,6 +23,8 @@ Verbindliche Regeln:
 6. Verwende für Inline-Mathematik ausschließlich `\m{...}`, für abgesetzte Formeln
    `\startformula ... \stopformula`. Verwende niemals `$...$` oder `$$...$$`
    als Mathe-Begrenzer; dies wird nach dem Kompilieren verbindlich geprüft.
+   In MetaPost-Beschriftungen benutze stattdessen `\math{...}` und niemals
+   `"$...$"`; die Prüfung erfasst auch tatsächlich gesetzte MetaPost-Beschriftungen.
    Für MetaPost-Grafiken definiere wichtige Punkte, Knoten und Ereigniskoordinaten
    einmal und verwende sie im gesamten Diagramm wieder. Leite abhängige
    Positionen davon ab, statt dieselben Zahlen mehrfach einzutragen.

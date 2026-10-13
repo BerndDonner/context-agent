@@ -1,73 +1,70 @@
+"""The ConTeXt instrumented compiler, not Python source heuristics, is the linter."""
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from context_agent.job import load_job
-from context_agent.nogos import NogoContext, run_checkers
+from context_agent.models import AgentTurn, NogoFinding
+from context_agent.nogos import NogoContext, load_checkers, run_checkers
 from context_agent.workflow import run_job
 from test_workflow import FakeSession
 
 
-def inspect(tmp_path: Path, job_factory, source: str):  # type: ignore[no-untyped-def]
-    root = job_factory(tmp_path, nogo_directory="custom_nogos")
-    (root / "custom_nogos").mkdir()
-    main_tex = root / "result/main.tex"
-    main_tex.write_text(source, encoding="utf-8")
+FINDING = NogoFinding(rule_id='context-dollar-math', message='compiled dollar math',
+                     file='main.tex', line=2, repair_hint='Use \\m or MP \\math')
+
+
+def test_mandatory_checker_is_regular_plugin_even_with_custom_directory(tmp_path, job_factory):
+    root = job_factory(tmp_path, nogo_directory='custom_nogos')
+    (root / 'custom_nogos').mkdir()
     job = load_job(root)
-    return run_checkers([], NogoContext(job, main_tex, None, None))
-
-
-def test_detects_real_ctc_math_and_reports_lines(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    # Use a representative fragment of the uploaded CTC file.
-    text = r'''\starttext
-The $N$ variable, with $f_{\rm OC0}=f_{\rm clk\_I/O}/2$.
-\stoptext
-'''
-    findings, failures = inspect(tmp_path, job_factory, text)
+    checkers, failures = load_checkers(job.nogo_directory)
     assert not failures
-    assert len(findings) == 2
-    assert {f.rule_id for f in findings} == {"context-dollar-math"}
-    assert all(f.line == 2 for f in findings)
-    assert all('\\m{' in (f.repair_hint or '') for f in findings)
-
-
-def test_comments_literals_and_code_are_ignored(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    text = r'''\starttext
-% $comment$
-\starttyping
-$code$ and $$code$$
-\stoptyping
-\type{$literal$} \typ[option]{$another$}
-\startMPcode
-label("$not_conTexT_math$", origin);
-\stopMPcode
-\startluacode
-local price = "$5"
-\stopluacode
-A price of \$5, and literal \% $comment is not commented but math$.
-Correct inline \m{N} and \startformula N=5 \stopformula.
-\stoptext
-'''
-    findings, failures = inspect(tmp_path, job_factory, text)
+    assert [x.name for x in checkers] == ['dollar_math']
+    main = root / 'result/main.tex'
+    main.write_text('\\starttext $x$ \\stoptext')
+    requested = []
+    findings, failures = run_checkers(checkers, NogoContext(
+        job, main, None, None, remote_lint=lambda name:
+            (requested.append(name) or [FINDING])))
     assert not failures
-    assert len(findings) == 1
-    assert findings[0].line == 13
+    assert requested == ['dollar_math']
+    assert findings == [FINDING]
 
 
-def test_display_dollars_and_unclosed_are_rejected(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    findings, failures = inspect(tmp_path, job_factory, '$$a+b$$ and $unfinished')
+def test_missing_shell_is_checker_failure_not_success(tmp_path, job_factory):
+    root = job_factory(tmp_path)
+    job = load_job(root)
+    checkers, failures = load_checkers(job.nogo_directory)
     assert not failures
-    assert len(findings) == 2
-    assert all(f.rule_id == 'context-dollar-math' for f in findings)
+    main = root / 'result/main.tex'
+    main.write_text('\\starttext hi \\stoptext')
+    findings, failures = run_checkers(checkers, NogoContext(job, main, None, None))
+    assert not findings
+    assert len(failures) == 1
+    assert failures[0].checker == 'dollar_math'
 
 
 class DollarSession(FakeSession):
-    def run_initial(self, prompt: str):
+    def run_initial(self, prompt):
         turn = super().run_initial(prompt)
         (self.remote / 'main.tex').write_text('\\starttext\nThe $N$ variable.\n\\stoptext\n')
         return turn
 
-    def run_followup(self, prompt: str, previous_response_id: str):
+    def run_dollar_lint(self):
+        has_dollars = '$' in (self.remote / 'main.tex').read_text()
+        findings = [FINDING.as_dict()] if has_dollars else []
+        return {'nonce': 'test', 'findings': findings}, AgentTurn(
+            response_id='lint', status='completed', output_text='',
+            raw={'id': 'lint'}, usage={'input_tokens': 2, 'output_tokens': 1, 'total_tokens': 3})
+
+    def run_followup(self, prompt, previous_response_id):
         assert 'context-dollar-math' in prompt
         self.followups.append(prompt)
         (self.remote / 'main.tex').write_text('\\starttext\nThe \\m{N} variable.\n\\stoptext\n')
@@ -75,33 +72,53 @@ class DollarSession(FakeSession):
         return self._turn('repaired', 'repaired')
 
 
-def test_builtin_nogo_triggers_repair_without_custom_checkers(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    root = job_factory(tmp_path, nogo_directory='custom_nogos')
+def test_lint_failure_repairs_without_custom_checkers(tmp_path, job_factory):
+    root = job_factory(tmp_path, nogo_directory='custom_nogos', max_turns=5)
     (root / 'custom_nogos').mkdir()
-    sessions: list[DollarSession] = []
-
-    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
-        assert "\\m{...}" in system
-        sessions.append(DollarSession(job))
-        return sessions[-1]
-
-    report = run_job(root, session_factory=factory)
+    report = run_job(root, session_factory=lambda job, *_: DollarSession(job))
     assert report.status == 'success', report.errors
     assert report.nogo_repairs == 1
-    assert report.agent_turns == 2
-    assert not report.findings
+    assert report.agent_turns == 4  # generate, lint, repair, lint
     assert '\\m{N}' in (root / 'result/main.tex').read_text()
-    assert sessions[0].followups
 
 
-def test_builtin_nogo_exhausted_repair_budget_fails(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+def test_lint_failure_exhausted_budget(tmp_path, job_factory):
     root = job_factory(tmp_path, nogo_directory='custom_nogos', max_repairs=0)
     (root / 'custom_nogos').mkdir()
-
-    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
-        return DollarSession(job)
-
-    report = run_job(root, session_factory=factory)
+    report = run_job(root, session_factory=lambda job, *_: DollarSession(job))
     assert report.status == 'failed'
     assert report.nogo_repairs == 0
     assert report.findings[0].rule_id == 'context-dollar-math'
+
+
+@pytest.mark.parametrize(('name','text','expected'), [
+    ('inline', r'\\starttext $x$ and \\m{y} \\stoptext', True),
+    ('display', r'\\starttext $$x$$ \\stoptext', True),
+    ('mp', r'\\starttext\\startMPcode draw textext("$z$"); \\stopMPcode\\stoptext', True),
+    ('mp_ok', r'\\starttext\\startMPcode draw textext("\\math{z}"); \\stopMPcode\\stoptext', False),
+    ('unexecuted', r'\\starttext \\def\\unused{$x$} okay \\stoptext', False),
+    ('verbatim', r'\\starttext\\type{$x$}\\starttyping $z$ \\stoptyping \\stoptext', False),
+    ('lua', r'\\starttext\\startluacode local v = "$x$" \\stopluacode\\stoptext', False),
+])
+def test_real_lmtx_lint(tmp_path, name, text, expected):
+    # Accept either an explicit test LMTX runner or the extracted test runtime.
+    runner = os.environ.get('CONTEXT_AGENT_TEST_LMTX_RUNNER')
+    if not runner:
+        candidate = Path('/mnt/data/context-lint-probe/runtime/context-local.sh')
+        if candidate.is_file():
+            runner = str(candidate)
+    if not runner:
+        pytest.skip('ConTeXt LMTX runner not installed')
+    file = tmp_path / 'main.tex'
+    file.write_text(text.replace('\\\\', '\\'), encoding='utf-8')
+    report = tmp_path / 'lint.json'
+    script = Path(__file__).resolve().parents[1] / 'src/context_agent/resources/runtime/lint-dollar-math.sh'
+    env = os.environ.copy()
+    env['CONTEXT_AGENT_LINT_RUNNER'] = runner
+    run = subprocess.run(['bash', str(script), str(file), str(report), 'test-nonce'],
+                         text=True, capture_output=True, env=env)
+    assert run.returncode == 0, run.stderr
+    payload = json.loads(report.read_text())
+    assert bool(payload['findings']) is expected
+    assert payload['nonce'] == 'test-nonce'
+    assert not (tmp_path / '.context-agent-dollar-lint.tex').exists()

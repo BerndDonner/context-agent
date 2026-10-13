@@ -187,20 +187,32 @@ beobachtete Service-Tiers, sofern diese in der Antwort stehen.
 - `editable`: redaktionelle Bearbeitung ist erlaubt
 - `guidance`: freie sinnvolle Ausarbeitung ist erlaubt
 
-### Verbindliche ConTeXt-Mathematik-Konvention (seit 0.3.1)
+### Verbindliche ConTeXt-Mathematik-Konvention (dynamischer Linter)
 
-`main.tex` muss für Inline-Mathematik `\m{...}` und für abgesetzte Formeln
-`\startformula ... \stopformula` verwenden. TeX-/LaTeX-typische
-`$...$` und `$$...$$` sind in generiertem ConTeXt-Quelltext verboten.
-Der **eingebaute** No-go-Checker `context-dollar-math` läuft bei **jedem Job**,
-unabhängig von `nogo_directory`, nach dem Compile und **vor** der
-Reproduktionsprüfung und der Übernahme von `include/`. Er meldet genaue
-Zeilennummern und löst über `limits.max_nogo_repairs` die bereits vorhandene
-automatische Reparaturschleife aus. Bleiben Verstöße bestehen, schlägt
-der Job fehl. Literalbeispiele (`\type{...}`, `\starttyping`), Kommentare
-und MetaPost-/Lua-Code werden nicht fälschlich als Formeltext geprüft.
-Der Check kontrolliert die Syntax von `main.tex`, **nicht** die fachliche
-Richtigkeit mathematischer Ausdrücke.
+Im ConTeXt-Dokument gelten `\m{...}` bzw. `\startformula ... \stopformula`
+als verbindliche Schreibweise. In MetaPost-Beschriftungen verwende
+`\math{...}`. Die Schreibweisen `$...$` und `$$...$$` sind verboten.
+
+Der mitgelieferte **Pflicht-Checker** liegt als reguläres Plugin unter
+`src/context_agent/resources/nogos/dollar_math.py`, unabhängig vom optionalen
+job-spezifischen `nogo_directory`. Er führt im **bestehenden Hosted-Container**
+einen zusätzlichen ConTeXt-LMTX-Satzlauf aus. Dafür erhält ConTeXt eine
+instrumentierte, temporäre Kopie von `main.tex`; das originale `main.tex`,
+`main.pdf` und `context.log` werden dabei **nicht** verändert. Seine tatsächlichen
+Math-Shift-Tokens werden erkannt, Kommentare, Verbatim, Lua-Strings und bloße
+MetaPost-Strings nicht. Es handelt sich um eine *dynamische* Prüfung: Ungenutzte
+TeX-/MetaPost-Definitionen werden nicht erfasst. Bei MetaPost-Zeilen kann die
+Meldung auf das Ende des MP-Blocks statt die Beschriftungszeile verweisen;
+Mehrfachtreffer je Zeile werden zusammengefasst.
+
+**API-Besonderheit:** Die Containers API hat keinen unmittelbaren
+Shell-Exec-Endpunkt. Ein zusätzlicher, von der Generierung unabhängiger
+Responses-Aufruf startet deshalb ausschließlich das Lint-Skript. Dessen
+Modell-Freitext wird ignoriert; verarbeitet wird ausschließlich die vom
+Prüf-Satzlauf erstellte JSON-Datei mit frischem Nonce. Fehlender, ungültiger
+oder nicht erfolgreicher Lint-Befund ist ein Prüffehler, **kein Erfolg**.
+Dieser Aufruf zählt zu `max_agent_turns` und zur Tokenstatistik, auch bei
+erneuter Prüfung nach einer Reparatur. `max_nogo_repairs` gilt weiterhin.
 
 Bei MetaPost-Grafiken sollen relevante Punkte und Ereignisse einmal definiert,
 und bei Linien, Beschriftungen und Hilfskonstruktionen **wiederverwendet** werden.
@@ -374,9 +386,9 @@ abgenommenen Job und `2` bei ungültiger Konfiguration.
 
 ## No-go-Checker
 
-Version 0.3 führt weiterhin alle alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
+Zusätzlich führt der Agent alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
 `nogo_directory` wird zuerst `job/nogos/` und anschließend ein projektweites `nogos/`
-gesucht. Das mitgelieferte Verzeichnis ist absichtlich leer.
+gesucht. Pflicht-Checker aus `resources/nogos/` laufen unabhängig davon immer zuerst.
 
 Ein Checker exportiert eine Funktion:
 

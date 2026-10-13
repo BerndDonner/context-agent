@@ -1,0 +1,12 @@
+% This file is loaded only in a disposable lint compilation.
+% Preserve TeX's original math shift while instrumenting live catcode tables.
+\begingroup
+\catcode`\$=3
+\global\let\CADollarOriginalMathShift=$
+\endgroup
+\def\CADollarNotify{\immediate\write16{CA-DOLLAR-LINT line \the\inputlineno}}
+\begingroup
+\catcode`\$=13
+\lccode`\~=`\$
+\lowercase{\endgroup\gdef~{\CADollarNotify\CADollarOriginalMathShift}}
+\ctxlua{tex.setcatcode(catcodes.numbers.ctxcatcodes,36,13);tex.setcatcode(catcodes.numbers.texcatcodes,36,13)}

@@ -38,6 +38,8 @@ class AgentSession(Protocol):
 
     def review_text(self, prompt: str, previous_response_id: str | None) -> AgentTurn: ...
 
+    def run_dollar_lint(self) -> tuple[dict[str, Any], AgentTurn]: ...
+
     def close(self) -> None: ...
 
 
@@ -292,6 +294,91 @@ class OpenAIHostedSession:
             target.write_bytes(data)
             downloaded[local_name] = target
         return downloaded
+
+    def run_dollar_lint(self) -> tuple[dict[str, Any], AgentTurn]:
+        """Execute the deterministic ConTeXt checker in THIS hosted container.
+
+        The Responses model is only an execution bridge (the Containers API has
+        no direct process-exec endpoint). Its natural-language output is ignored.
+        Accept only the checker-produced JSON file with a fresh nonce.
+        """
+        import uuid
+        if self.container_id is None:
+            raise RemoteAgentError("hosted container not available for dynamic lint")
+        nonce = uuid.uuid4().hex
+        command = (
+            "bash /mnt/data/work/runtime/lint-dollar-math.sh "
+            "/mnt/data/work/job/result/main.tex "
+            f"/mnt/data/work/job/result/.dollar-lint-result.json {nonce}"
+        )
+        try:
+            response = self._client.responses.create(
+                model=self.job.config.model,
+                instructions=("You are a shell execution bridge, not a reviewer. "
+                              "Execute the user's exact command once, with no additional "
+                              "shell commands. Do not edit files or interpret results."),
+                input=[{"role": "user", "content": [{"type": "input_text", "text":
+                    "Execute exactly this command once, then stop:\n" + command}]}],
+                tools=[{"type": "shell", "environment": {
+                    "type": "container_reference", "container_id": self.container_id}}],
+                tool_choice="required", parallel_tool_calls=False,
+                max_output_tokens=1200, store=True,
+                **({"service_tier": "default"} if self.job.config.processing.mode == "standard"
+                   else {"service_tier": "flex"} if self.job.config.processing.mode == "flex"
+                   else {}),
+                **({"reasoning": {"effort": "low"}}
+                   if self.job.config.model == "gpt-6.1-sol" else {}),
+            )
+            raw = _model_dump(response)
+            if getattr(response, "status", None) != "completed":
+                raise RemoteAgentError("lint shell response did not finish")
+            calls = [entry for entry in raw.get("output", [])
+                     if isinstance(entry, dict) and entry.get("type") == "shell_call"]
+            if len(calls) != 1 or calls[0].get("action", {}).get("commands") != [command]:
+                raise RemoteAgentError("lint bridge did not execute the exact approved command")
+            outputs = [entry for entry in raw.get("output", [])
+                       if isinstance(entry, dict) and entry.get("type") == "shell_call_output"]
+            if not outputs:
+                raise RemoteAgentError("lint bridge returned no shell result")
+            if len(outputs) != 1 or outputs[0].get('call_id') != calls[0].get('call_id'):
+                raise RemoteAgentError("lint shell result does not match approved command")
+            command_outputs = outputs[0].get("output")
+            if not isinstance(command_outputs, list) or len(command_outputs) != 1:
+                raise RemoteAgentError("lint shell result count is invalid")
+            outcome = command_outputs[0].get("outcome", {})
+            if not isinstance(outcome, dict) or outcome.get("type") != "exit" or outcome.get("exit_code") != 0:
+                raise RemoteAgentError(f"lint compilation failed: {outcome}")
+            content = self._retrieve_container_path(
+                "/mnt/data/work/job/result/.dollar-lint-result.json")
+            lint_report = json.loads(content.decode("utf-8"))
+            if not isinstance(lint_report, dict) or lint_report.get("nonce") != nonce:
+                raise RemoteAgentError("lint report missing or stale (nonce mismatch)")
+            if not isinstance(lint_report.get("findings"), list):
+                raise RemoteAgentError("lint report has invalid findings")
+            usage = raw.get("usage")
+            turn = AgentTurn(
+                response_id=str(response.id), status=str(getattr(response,"status","unknown")),
+                output_text="", raw=raw,
+                usage=usage if isinstance(usage, dict) else {},
+            )
+            return lint_report, turn
+        except RemoteAgentError:
+            raise
+        except Exception as exc:
+            raise RemoteAgentError(f"dynamic ConTeXt lint failed: {exc}") from exc
+
+    def _retrieve_container_path(self, remote_path: str) -> bytes:
+        if self.container_id is None:
+            raise RemoteAgentError("no container")
+        page = self._client.containers.files.list(self.container_id, limit=100, order="desc")
+        matches = [item for item in page
+                   if str(getattr(item, "path", "")) == remote_path]
+        if not matches:
+            raise RemoteAgentError(f"remote lint report missing: {remote_path}")
+        latest = max(matches, key=lambda item: int(getattr(item, "created_at", 0)))
+        content = self._client.containers.files.content.retrieve(
+            str(latest.id), container_id=self.container_id)
+        return _binary_content(content)
 
     def close(self) -> None:
         if self.job.config.runtime.keep_remote:

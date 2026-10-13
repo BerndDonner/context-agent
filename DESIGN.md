@@ -970,17 +970,30 @@ Jobvalidierung abgelehnt, statt einen anderen Tarif vorzutäuschen.
 Container-/Toolkosten sind separat von Tokenpreisen zu betrachten.
 
 
-## Reproduzierbare ConTeXt-Quellen: No-go und Grafikstruktur (0.3.1)
+## Dynamischer ConTeXt-No-go für Mathematik (0.6.1)
 
-Der No-go `context-dollar-math` wird als **Built-in** in `run_checkers`
-vor den optionalen Job-Checkern ausgeführt, auch wenn `nogo_directory`
-explizit überschrieben oder gar nicht vorhanden ist. Er prüft `main.tex`
-auf unescaped TeX-Dollar-Mathe außerhalb von Kommentaren, `\type{}`,
-`\starttyping`, MP- und Lua-Codeblöcken. Er erzeugt `NogoFinding` mit
-Datei, Zeile und Reparaturhinweis. Die vorhandene Workflow-Schleife
-kompiliert und prüft die korrigierte Fassung erneut; keine besondere
-Reproduktionsoption muss eingeschaltet werden. `limits.max_nogo_repairs`
-gilt weiterhin. Im Fehlerfall bleiben die Include-Dateien unberührt.
+Der Pflicht-Checker `resources/nogos/dollar_math.py` ist ein reguläres Plugin,
+das vor optionalen job-lokalen Plugins geladen wird. `context_math.py` und
+seine Python-Quelltextheuristiken entfallen vollständig. Das Plugin fordert
+im bereits verwendeten Hosted-Container einen zusätzlichen LMTX-Lint-Satzlauf
+an (`runtime/lint-dollar-math.sh` und `runtime/lint-dollar-setup.tex`).
+
+Der Satzlauf instrumentiert `ctxcatcodes` und `texcatcodes` (Math-Shift `$`
+als aktives Zeichen) und protokolliert nur verarbeitete `$`-Tokens. Die
+Laufzeit schreibt ausschließlich in temporäre `.context-agent-dollar-lint.*`
+Dateien und einen mit einmaligem Nonce gekennzeichneten JSON-Befund. Die bisherige `main.pdf`
+wird nicht überschrieben. Die Responses API dient nur als Shell-Brücke,
+nicht als inhaltlicher Richter; der exakte Shell-Aufruf und sein Exitcode
+werden geprüft, der Modelltext verworfen, ein frischer Nonce verlangt.
+
+Der Checker erkennt auch **ausgeführte** MP-`textext`-Beschriftungen. Nicht
+verwendete Definitionen werden bewusst nicht statisch untersucht. MP-
+Zeilenangaben sind auf den Blockabschluss ungenau. Für normalen TeX-Code
+wird `\m{...}` vorgeschlagen, für MetaPost `\math{...}`.
+
+Der zusätzliche API-Turn zählt gegen `limits.max_agent_turns` und wird als
+Phase `nogo-dollar-lint` mit Usage im Transcript erfasst. Bei Fehlern gilt
+fail-closed. `max_nogo_repairs` bleibt unverändert.
 
 Die Systemanweisung verwendet ausschließlich `\m{}` oder
 `\startformula ... \stopformula` für mathematische Notation.

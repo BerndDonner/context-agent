@@ -28,7 +28,8 @@ def check(context):
     assert not failures
     findings, failures = run_checkers(
         checkers,
-        NogoContext(job=job, main_tex=main_tex, main_pdf=None, context_log=None),
+        NogoContext(job=job, main_tex=main_tex, main_pdf=None, context_log=None,
+                    remote_lint=lambda name: []),
     )
     assert not failures
     assert [finding.rule_id for finding in findings] == ["bad-word"]

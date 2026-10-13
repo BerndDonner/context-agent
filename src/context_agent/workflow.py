@@ -286,12 +286,29 @@ def run_job(
                         target = include_stage / relative
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes(data)
+                    def remote_lint(name: str) -> list[NogoFinding]:
+                        if name != "dollar_math":
+                            raise ContextAgentError(f"unknown remote linter: {name}")
+                        if not _may_turn(report, job):
+                            raise ContextAgentError("not enough agent turns for dynamic ConTeXt lint")
+                        progress('Dynamischer ConTeXt-Lint im Hosted-Container gestartet')
+                        payload, turn = session.run_dollar_lint()
+                        report.agent_turns += 1
+                        report.response_ids.append(turn.response_id)
+                        report.add_usage(turn.usage, phase='nogo-dollar-lint', raw=turn.raw)
+                        append_transcript(transcript_path, turn_number=report.agent_turns,
+                                          phase='nogo-dollar-lint', turn=turn)
+                        findings = [NogoFinding(**item) for item in payload['findings']]
+                        progress(f'Dynamischer ConTeXt-Lint: {len(findings)} Befunde')
+                        return findings
+
                     context = NogoContext(
                         job=job,
                         main_tex=state.main_tex,
                         main_pdf=state.main_pdf,
                         context_log=state.context_log,
                         include_override=include_stage,
+                        remote_lint=remote_lint,
                     )
                     findings, runtime_failures = run_checkers(checkers, context)
                     if job.config.review.reproduction:

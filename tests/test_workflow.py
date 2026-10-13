@@ -47,6 +47,13 @@ class FakeSession(AgentSession):
             copied[source.name] = target
         return copied
 
+    def run_dollar_lint(self):
+        # A fake container whose compiled documents contain no dollar math.
+        return {'nonce': 'fake', 'findings': []}, AgentTurn(
+            response_id='lint-fake', status='completed', output_text='',
+            raw={'id': 'lint-fake'},
+            usage={'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2})
+
     def close(self) -> None:
         self.closed = True
 
@@ -78,7 +85,7 @@ def test_workflow_repairs_missing_artifacts(tmp_path: Path, job_factory) -> None
 
     report = run_job(job_root, session_factory=factory)
     assert report.status == "success"
-    assert report.agent_turns == 2
+    assert report.agent_turns == 3  # generation + repair + dynamic lint
     assert report.compile_success
     assert captured["session"].closed
 
@@ -201,7 +208,7 @@ class ReviewSession(FakeSession):
 def test_reproduction_review_repairs_and_commits_includes(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
-    job_root = job_factory(tmp_path, max_turns=8)
+    job_root = job_factory(tmp_path, max_turns=15)
     configure_reproduction_source(job_root)
     with (job_root / 'job.yaml').open('a') as f:
         f.write('\nreview:\n  reproduction: true\n  max_content_repairs: 2\n  max_visual_repairs: 2\n')
@@ -215,14 +222,14 @@ def test_reproduction_review_repairs_and_commits_includes(
     report = run_job(job_root, session_factory=factory)
     assert report.status == 'success', report.errors
     assert report.review_repairs == 1
-    assert report.agent_turns == 7
+    assert report.agent_turns == 9  # includes two dynamic ConTeXt lint calls
     assert captured['session'].review_calls == 2
 
 
 def test_reproduction_fail_does_not_change_includes(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
-    job_root = job_factory(tmp_path, max_turns=8)
+    job_root = job_factory(tmp_path, max_turns=15)
     configure_reproduction_source(job_root)
     (job_root / 'include/plotmod.lua').write_text('original')
     with (job_root / 'job.yaml').open('a') as f:
@@ -290,7 +297,7 @@ def test_remote_includes_not_applied_when_review_fails(
 def test_reproduction_review_and_repair_obey_requested_scope(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
-    job_root = job_factory(tmp_path, max_turns=8)
+    job_root = job_factory(tmp_path, max_turns=15)
     configure_reproduction_source(job_root)
     (job_root / 'task.md').write_text(
         'Reproduce chapter B including printed solutions. Omit chapter A explicitly.',
@@ -325,7 +332,7 @@ def test_multibatch_review_defers_global_omission_check(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     """Multi-page scans must not prompt a false omission before all pages are seen."""
-    job_root = job_factory(tmp_path, max_turns=8)
+    job_root = job_factory(tmp_path, max_turns=15)
     configure_reproduction_source(job_root)
     (job_root / 'task.md').write_text('Reproduce all tasks and solutions from scan.')
     with (job_root / 'job.yaml').open('a') as stream:
@@ -494,9 +501,9 @@ def test_scanned_pdf_is_inventoried_from_images_without_ocr(
                      ScanSession(job))
     assert report.status == 'success', report.errors
     assert report.source_inventory[0]['kind'] == 'solution'
-    assert len(report.usage_by_phase) == 4
+    assert len(report.usage_by_phase) == 5
     assert [phase['phase'] for phase in report.usage_by_phase] == [
-        'inventory-source', 'initial', 'review-content', 'review-reproduction',
+        'inventory-source', 'initial', 'nogo-dollar-lint', 'review-content', 'review-reproduction',
     ]
 
 
