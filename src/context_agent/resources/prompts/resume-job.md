@@ -25,3 +25,8 @@ und report.json. Die Include-Dateien wurden aus dem gesicherten Snapshot wiederh
 Du darfst keine fachliche Bearbeitung oder typografische Optimierung ausführen,
 die nicht im eigentlichen Arbeitsauftrag verlangt wurde. Bei unleserlichen Stellen
 ist die dokumentierte Unsicherheit beizubehalten. Verwende ConTeXt-Mathe statt $...$.
+
+
+Längere ConTeXt-Kompilierungen über `managed-process.py start` und wiederholte
+`managed-process.py wait`-Abfragen ausführen (siehe Systemanweisung),
+nicht aus einem vorläufigen Shell-Exit-Code auf den Abschluss schließen.

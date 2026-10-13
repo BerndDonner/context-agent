@@ -57,7 +57,7 @@ class DollarSession(FakeSession):
         (self.remote / 'main.tex').write_text('\\starttext\nThe $N$ variable.\n\\stoptext\n')
         return turn
 
-    def run_dollar_lint(self):
+    def run_dollar_lint(self, *, max_api_calls: int):
         has_dollars = '$' in (self.remote / 'main.tex').read_text()
         findings = [FINDING.as_dict()] if has_dollars else []
         return {'nonce': 'test', 'findings': findings}, AgentTurn(

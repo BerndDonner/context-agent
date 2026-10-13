@@ -292,9 +292,10 @@ def run_job(
                         if not _may_turn(report, job):
                             raise ContextAgentError("not enough agent turns for dynamic ConTeXt lint")
                         progress('Dynamischer ConTeXt-Lint im Hosted-Container gestartet')
-                        payload, turn = session.run_dollar_lint()
-                        report.agent_turns += 1
-                        report.response_ids.append(turn.response_id)
+                        payload, turn = session.run_dollar_lint(
+                            max_api_calls=job.config.limits.max_agent_turns - report.agent_turns)
+                        report.agent_turns += turn.api_calls
+                        report.response_ids.extend(turn.raw.get('response_ids', [turn.response_id]))
                         report.add_usage(turn.usage, phase='nogo-dollar-lint', raw=turn.raw)
                         append_transcript(transcript_path, turn_number=report.agent_turns,
                                           phase='nogo-dollar-lint', turn=turn)

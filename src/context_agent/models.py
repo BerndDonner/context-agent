@@ -181,6 +181,7 @@ class AgentTurn:
     output_text: str
     raw: dict[str, Any]
     usage: dict[str, Any] = field(default_factory=dict)
+    api_calls: int = 1
 
 
 @dataclass(frozen=True)

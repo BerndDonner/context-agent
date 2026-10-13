@@ -47,7 +47,7 @@ class FakeSession(AgentSession):
             copied[source.name] = target
         return copied
 
-    def run_dollar_lint(self):
+    def run_dollar_lint(self, *, max_api_calls: int):
         # A fake container whose compiled documents contain no dollar math.
         return {'nonce': 'fake', 'findings': []}, AgentTurn(
             response_id='lint-fake', status='completed', output_text='',

@@ -9,3 +9,8 @@ erneut. Bewahre vorhandene brauchbare Arbeit. Erzeuge nach dem Kompilieren stets
 `bash /mnt/data/work/runtime/collect-includes.sh /mnt/data/work/job`.
 Stelle danach `main.tex`, ein gültiges `main.pdf`, `context.log` und
 `include-snapshot.tar.gz` bereit.
+
+
+Längere ConTeXt-Kompilierungen über `managed-process.py start` und wiederholte
+`managed-process.py wait`-Abfragen ausführen (siehe Systemanweisung),
+nicht aus einem vorläufigen Shell-Exit-Code auf den Abschluss schließen.

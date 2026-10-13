@@ -983,11 +983,17 @@ als aktives Zeichen) und protokolliert nur verarbeitete `$`-Tokens. Die
 Laufzeit schreibt ausschließlich in temporäre `.context-agent-dollar-lint.*`
 Dateien und einen mit einmaligem Nonce gekennzeichneten JSON-Befund. Derselbe
 Befund wird als markierte Zeile auf `stdout` des verifizierten Shell-Aufrufs ausgegeben.
-Bei `shell_call_output.status=in_progress` ist auch ein `exit_code=0` lediglich
-vorläufig: Das Backend wartet dann ohne weiteren Modellturn über die paginierte
-Containers-Dateiliste und den Content-Endpunkt auf die nonce-gebundene
-JSON-Datei (Timeout maximal 10 Minuten und zusätzlich durch Job-Limit begrenzt).
-Fehler und Timeouts gelten nicht als erfolgreiche Prüfung. Die bisherige `main.pdf`
+Auch bei `response.status=completed` kann `shell_call_output.status=in_progress`
+sein. Der dort sichtbare Exit-Code ist dann nicht endgültig. Der generische
+Container-Supervisor `runtime/managed-process.py` wird einmal mit UUID gestartet;
+ein separater Worker führt den ConTeXt-Linter aus, protokolliert stdout/stderr
+und legt den wirklichen Exit-Code atomar ab. Wiederholte kurze Hosted-Shell-
+Statusabrufe prüfen ausschließlich den gespeicherten Zustand; die Container-
+Dateiliste wird zur Synchronisierung nicht verwendet. Falls Ausgabegröße die
+Statusantwort übersteigt, ist eine offset-basierte Log-Abfrage möglich. Die
+Zeitgrenze ist das konfigurierte Gesamtbudget des Jobs, nicht die Dauer eines
+einzelnen Polls. Fehler, unvollständige Ergebnisse und Abbrüche gelten niemals
+als erfolgreiche Prüfung. Die bisherige `main.pdf`
 wird nicht überschrieben. Die Responses API dient nur als Shell-Brücke,
 nicht als inhaltlicher Richter; der exakte Shell-Aufruf und bei abgeschlossener
 Shell sein Exitcode werden geprüft, der Modelltext verworfen, ein frischer Nonce verlangt.
@@ -997,8 +1003,9 @@ verwendete Definitionen werden bewusst nicht statisch untersucht. MP-
 Zeilenangaben sind auf den Blockabschluss ungenau. Für normalen TeX-Code
 wird `\m{...}` vorgeschlagen, für MetaPost `\math{...}`.
 
-Der zusätzliche API-Turn zählt gegen `limits.max_agent_turns` und wird als
-Phase `nogo-dollar-lint` mit Usage im Transcript erfasst. Bei Fehlern gilt
+Jeder tatsächlich benötigte API-Turn für Start, Wait und gegebenenfalls Log-Read
+zählt gegen `limits.max_agent_turns`. Die aufsummierten Tokens und alle
+Shell-Aufrufe werden als Phase `nogo-dollar-lint` im Transcript erfasst. Bei Fehlern gilt
 fail-closed. `max_nogo_repairs` bleibt unverändert.
 
 Die Systemanweisung verwendet ausschließlich `\m{}` oder
@@ -1043,3 +1050,31 @@ Er lief noch **vor** dem neuen Built-in und vor einem Flex-Livetest.
 - Phasenfortschritt schreibt `Progress` auf stderr, der maschinenlesbare
   Abschlussbericht bleibt auf stdout. Es gibt weder einen erfundenen
   Token-Fortschritt während eines API-Aufrufs noch neue Shell-Limits.
+
+## Verwaltete Prozessausführung (0.7.0)
+
+Das generische `runtime/managed-process.py` implementiert `start`, `wait`,
+`status`, `read` und `cancel` im **gleichen** Hosted-Container. Das Design ist
+an Codex' getrennten Prozessstart/Read/Terminate und OpenHands' Remote-
+Command-ID mit Statusabfrage orientiert. Jede Prozess-ID ist einmalig;
+kein Poll wiederholt die Ausführung. Der Supervisor läuft unabhängig vom
+Lebenszyklus einer Responses-Nachricht in einer neuen Session, erstellt die
+Kindprozessgruppe separat, wartet auf den Exit und schreibt einen atomaren
+Statusdatensatz. Stdout und stderr liegen in dauerhaften Dateien. `read`
+gibt höchstens 4096 Bytes pro Abfrage base64-kodiert zurück (Offset und
+Gesamtgröße werden mitgeliefert), sodass große Ergebnisse zuverlässig und
+ohne Tool-Output-Trunkierung übertragen werden können. SIGTERM/SIGKILL und
+PID-Startzeitvalidierung unterstützen sichere Abbrüche.
+
+Bei `shell_call_output.status=in_progress` wird **nur der Tool-Aufruf** als
+noch ausstehend betrachtet, keinesfalls als erfolgreich beendeter Prozess.
+Die Python-Brücke startet den Prozess einmal mit einer zufälligen ID und
+fragt danach seinen Zustand mit kurzen Folge-Responses ab. Der gespeicherte
+Status/Exit-Code ist die autoritative Grundlage. Die finale JSON-Auswertung
+verlangt weiterhin den frischen Nonce. Ein nicht abgeschlossener Prozess,
+fehlerhafter Status oder ein Timeout bedeutet fail-closed. Alle Responses-
+Aufrufe werden in `agent_turns`, Tokenmetriken und Response-IDs erfasst.
+
+Diese Prozesszustände gelten **nur für den laufenden Container**. Checkpoint-
+Resume nach Containerablauf benutzt wie gehabt die gespeicherten Jobartefakte,
+nicht alte Prozess-IDs.

@@ -64,3 +64,18 @@ Quellen- oder Fehlercheck unterbleibt. Es gibt kein zusätzliches Shell-Budget.
 Verwende für jeden ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen
 Runner; entpacke die ConTeXt-Distribution nicht dauerhaft selbst. Das Netzwerk
 wird nicht benötigt. Antworte am Ende knapp und nenne den Kompilierstatus.
+
+
+Prozessausführung: Für potenziell lang laufende Kommandos (insbesondere ConTeXt-Kompilierung)
+verwende den bereitgestellten, generischen Prozess-Supervisor
+`python3 /mnt/data/work/runtime/managed-process.py`, sobald `/mnt/data/work/runtime/`
+vorbereitet ist. Starte einen Job einmal mit einer eindeutigen ID:
+`python3 /mnt/data/work/runtime/managed-process.py start --cwd /mnt/data/work/job/result ID -- bash /mnt/data/work/runtime/bootstrap-context.sh --compile /mnt/data/work/job/result/main.tex /mnt/data/work/job/result/context.log`.
+Frage danach denselben Job mit
+`python3 /mnt/data/work/runtime/managed-process.py wait ID --seconds 5`
+ab, bis `status=exited` und `exit_code=0` vorliegt. `status=running` bedeutet
+weiter warten, NICHT dasselbe Kommando nochmals starten! Bei Fehlern den
+tatsächlichen Exit-Code und `stderr_tail` auswerten. `status=in_progress`
+eines Shell-Tools ist keine Abschlussmeldung. Eine bestehende ID niemals
+wiederverwenden; für einen erneuten Compilerlauf eine neue ID vergeben.
+Der Prozess läuft unabhängig von der Antwortlebensdauer des Modells.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib
+import uuid
 import json
 import os
 import shutil
@@ -39,7 +41,7 @@ class AgentSession(Protocol):
 
     def review_text(self, prompt: str, previous_response_id: str | None) -> AgentTurn: ...
 
-    def run_dollar_lint(self) -> tuple[dict[str, Any], AgentTurn]: ...
+    def run_dollar_lint(self, *, max_api_calls: int) -> tuple[dict[str, Any], AgentTurn]: ...
 
     def close(self) -> None: ...
 
@@ -54,8 +56,8 @@ class OpenAIHostedSession:
     """One OpenAI Responses API session backed by a hosted shell container."""
 
     LINT_REPORT_PATH: ClassVar[str] = "/mnt/data/work/job/result/.dollar-lint-result.json"
-    LINT_POLL_INTERVAL_SECONDS: ClassVar[float] = 2.0
-    LINT_MAX_WAIT_SECONDS: ClassVar[float] = 600.0
+    PROCESS_MANAGER: ClassVar[str] = "/mnt/data/work/runtime/managed-process.py"
+    PROCESS_OUTPUT_MARKER: ClassVar[str] = "CA-PROCESS-V1 "
 
     REMOTE_RESULT_PATHS: ClassVar[dict[str, str]] = {
         "main.tex": "/mnt/data/work/job/result/main.tex",
@@ -300,148 +302,189 @@ class OpenAIHostedSession:
             downloaded[local_name] = target
         return downloaded
 
-    def _wait_for_lint_report(self, nonce: str) -> dict[str, Any]:
-        """Wait for a running hosted shell to finish writing its result file.
+    def _managed_shell(self, command: str) -> tuple[dict[str, Any] | None, dict[str, Any], str]:
+        """Execute one allow-listed command through the existing Hosted Shell.
 
-        A completed Responses call does not imply that its shell_call_output is
-        completed. Its preliminary outcome can even contain exit_code=0. The
-        Containers Files API lets us wait without launching another model turn.
+        A completed Response can contain an IN-PROGRESS shell output. In that
+        case the tool has not delivered a final result; never trust its exit_code.
+        The managed-process supervisor provides independent process completion.
         """
         if self.container_id is None:
-            raise RemoteAgentError("hosted container unavailable while waiting for lint")
-
-        deadline = time.monotonic() + min(
-            float(self.job.config.limits.timeout_seconds), self.LINT_MAX_WAIT_SECONDS
+            raise RemoteAgentError("hosted container unavailable for managed process")
+        response = self._client.responses.create(
+            model=self.job.config.model,
+            instructions=("You are an execution bridge. Run exactly the provided shell "
+                          "command once, without changes or additional actions."),
+            input=[{"role": "user", "content": [{"type": "input_text", "text":
+                "Execute exactly this command once, then stop:\n" + command}]}],
+            tools=[{"type": "shell", "environment": {
+                "type": "container_reference", "container_id": self.container_id}}],
+            tool_choice="required", parallel_tool_calls=False,
+            max_output_tokens=1200, store=True,
+            **({"service_tier": "default"} if self.job.config.processing.mode == "standard"
+               else {"service_tier": "flex"} if self.job.config.processing.mode == "flex" else {}),
+            **({"reasoning": {"effort": "low"}}
+               if self.job.config.model == "gpt-6.1-sol" else {}),
         )
-        last_issue = "report not present yet"
-        while True:
-            try:
-                # The SDK's cursor page iterator traverses additional pages.
-                files = self._client.containers.files.list(
-                    self.container_id, limit=100, order="desc"
-                )
-                report_file = next(
-                    (item for item in files
-                     if getattr(item, "path", None) == self.LINT_REPORT_PATH), None
-                )
-                if report_file is not None:
-                    content = self._client.containers.files.content.retrieve(
-                        str(report_file.id), container_id=self.container_id
-                    )
-                    data = _binary_content(content)
-                    try:
-                        report = json.loads(data.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        # The file may have been indexed before its write completed.
-                        last_issue = "report is not yet complete JSON"
-                    else:
-                        return _validate_lint_report(report, nonce)
-            except RemoteAgentError:
-                raise
-            except Exception as exc:
-                # A transient listing/download failure must not be interpreted as
-                # success. Retry until the deadline; then preserve the cause.
-                last_issue = f"container file API: {exc}"
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RemoteAgentError(
-                    "timed out waiting for dynamic ConTeXt lint report "
-                    f"in hosted container ({last_issue})"
-                )
-            time.sleep(min(self.LINT_POLL_INTERVAL_SECONDS, remaining))
-
-    def run_dollar_lint(self) -> tuple[dict[str, Any], AgentTurn]:
-        """Execute the deterministic ConTeXt checker in THIS hosted container.
-
-        The Responses model is only an execution bridge (the Containers API has
-        no direct process-exec endpoint). Its natural-language output is ignored.
-        Accept only the checker-produced JSON with a fresh nonce. Completed
-        shell outputs provide it on stdout; in-progress outputs require polling
-        the report file via the Containers API (without a second model turn).
-        """
-        import uuid
-        if self.container_id is None:
-            raise RemoteAgentError("hosted container not available for dynamic lint")
-        nonce = uuid.uuid4().hex
-        command = (
-            "bash /mnt/data/work/runtime/lint-dollar-math.sh "
-            "/mnt/data/work/job/result/main.tex "
-            f"{self.LINT_REPORT_PATH} {nonce}"
-        )
+        raw = _model_dump(response)
+        if getattr(response, "status", None) != "completed":
+            raise RemoteAgentError("managed shell bridge Response did not complete")
+        calls = [entry for entry in raw.get("output", [])
+                 if isinstance(entry, dict) and entry.get("type") == "shell_call"]
+        outputs = [entry for entry in raw.get("output", [])
+                   if isinstance(entry, dict) and entry.get("type") == "shell_call_output"]
+        if len(calls) != 1 or calls[0].get("action", {}).get("commands") != [command]:
+            raise RemoteAgentError("managed shell bridge changed the approved command")
+        if len(outputs) != 1 or outputs[0].get("call_id") != calls[0].get("call_id"):
+            raise RemoteAgentError("managed shell result does not match approved command")
+        statuses = (calls[0].get("status"), outputs[0].get("status"))
+        if "incomplete" in statuses:
+            raise RemoteAgentError("managed shell output was incomplete")
+        if any(value not in (None, "completed", "in_progress") for value in statuses):
+            raise RemoteAgentError("managed shell returned an unknown execution status")
+        if "in_progress" in statuses:
+            return None, raw, str(response.id)
+        chunks = outputs[0].get("output", [])
+        if not isinstance(chunks, list) or len(chunks) != 1 or not isinstance(chunks[0], dict):
+            raise RemoteAgentError("managed shell returned an invalid result")
+        outcome = chunks[0].get("outcome", {})
+        if not isinstance(outcome, dict) or outcome.get("type") != "exit" or outcome.get("exit_code") != 0:
+            raise RemoteAgentError(f"managed shell command failed: {outcome}; "
+                                   f"stderr={chunks[0].get('stderr', '')!r}")
+        stdout = chunks[0].get("stdout")
+        if not isinstance(stdout, str):
+            raise RemoteAgentError("managed shell stdout missing")
+        reports = [line[len(self.PROCESS_OUTPUT_MARKER):] for line in stdout.splitlines()
+                   if line.startswith(self.PROCESS_OUTPUT_MARKER)]
+        if len(reports) != 1:
+            raise RemoteAgentError(f"expected one managed-process status, got {len(reports)}")
         try:
-            response = self._client.responses.create(
-                model=self.job.config.model,
-                instructions=("You are a shell execution bridge, not a reviewer. "
-                              "Execute the user's exact command once, with no additional "
-                              "shell commands. Do not edit files or interpret results."),
-                input=[{"role": "user", "content": [{"type": "input_text", "text":
-                    "Execute exactly this command once, then stop:\n" + command}]}],
-                tools=[{"type": "shell", "environment": {
-                    "type": "container_reference", "container_id": self.container_id}}],
-                tool_choice="required", parallel_tool_calls=False,
-                max_output_tokens=1200, store=True,
-                **({"service_tier": "default"} if self.job.config.processing.mode == "standard"
-                   else {"service_tier": "flex"} if self.job.config.processing.mode == "flex"
-                   else {}),
-                **({"reasoning": {"effort": "low"}}
-                   if self.job.config.model == "gpt-6.1-sol" else {}),
-            )
-            raw = _model_dump(response)
-            if getattr(response, "status", None) != "completed":
-                raise RemoteAgentError("lint shell response did not finish")
-            calls = [entry for entry in raw.get("output", [])
-                     if isinstance(entry, dict) and entry.get("type") == "shell_call"]
-            if len(calls) != 1 or calls[0].get("action", {}).get("commands") != [command]:
-                raise RemoteAgentError("lint bridge did not execute the exact approved command")
-            outputs = [entry for entry in raw.get("output", [])
-                       if isinstance(entry, dict) and entry.get("type") == "shell_call_output"]
-            if not outputs:
-                raise RemoteAgentError("lint bridge returned no shell result")
-            if len(outputs) != 1 or outputs[0].get('call_id') != calls[0].get('call_id'):
-                raise RemoteAgentError("lint shell result does not match approved command")
-            output_status = outputs[0].get("status")
-            call_status = calls[0].get("status")
-            if output_status == "incomplete" or call_status == "incomplete":
-                raise RemoteAgentError("lint shell call was incomplete")
-            if output_status not in (None, "in_progress", "completed") or call_status not in (
-                None, "in_progress", "completed"
-            ):
-                raise RemoteAgentError("lint shell call returned an unknown status")
+            status = json.loads(reports[0])
+        except json.JSONDecodeError as exc:
+            raise RemoteAgentError("managed-process status is invalid JSON") from exc
+        if not isinstance(status, dict):
+            raise RemoteAgentError("managed-process status must be a JSON object")
+        return status, raw, str(response.id)
 
-            if output_status == "in_progress" or call_status == "in_progress":
-                # An in-progress shell output's exit_code (even 0) is NOT a
-                # completion signal. Wait for the checker's nonce-bound report.
-                lint_report = self._wait_for_lint_report(nonce)
-            else:
-                command_outputs = outputs[0].get("output")
-                if not isinstance(command_outputs, list) or len(command_outputs) != 1:
-                    raise RemoteAgentError("lint shell result count is invalid")
-                item = command_outputs[0]
-                if not isinstance(item, dict):
-                    raise RemoteAgentError("lint shell result is invalid")
-                outcome = item.get("outcome", {})
-                if (not isinstance(outcome, dict) or outcome.get("type") != "exit"
-                        or outcome.get("exit_code") != 0):
-                    raise RemoteAgentError(f"lint compilation failed: {outcome}")
-                stdout = item.get("stdout")
-                if not isinstance(stdout, str):
-                    raise RemoteAgentError("lint shell stdout missing")
-                prefix = "CA-DOLLAR-LINT-REPORT-V1 "
-                reports = [line[len(prefix):] for line in stdout.splitlines()
-                           if line.startswith(prefix)]
-                if len(reports) != 1:
-                    raise RemoteAgentError(
-                        f"expected exactly one lint report in shell stdout, got {len(reports)}"
-                    )
-                lint_report = _validate_lint_report(json.loads(reports[0]), nonce)
-            usage = raw.get("usage")
+    def run_managed_command(self, argv: list[str], *, process_id: str | None = None,
+                            cwd: str = "/mnt/data/work/job/result",
+                            max_api_calls: int | None = None) -> tuple[dict[str, Any], AgentTurn]:
+        """Run a long command through a durable container-side supervisor.
+
+        A fresh process ID provides at-most-once execution. Polling uses short
+        read-only shell requests, each reading a persisted state. No process
+        timeout is inferred from response completion or polling intervals.
+        """
+        import shlex
+        if not argv:
+            raise ValueError("managed command cannot be empty")
+        process_id = process_id or uuid.uuid4().hex
+        command = ("python3 " + shlex.quote(self.PROCESS_MANAGER) + " start --cwd "
+                   + shlex.quote(cwd) + " " + shlex.quote(process_id) + " -- "
+                   + shlex.join(argv))
+        responses: list[dict[str, Any]] = []
+        ids: list[str] = []
+        def bridge(cmd: str) -> dict[str, Any] | None:
+            if max_api_calls is not None and len(responses) >= max_api_calls:
+                raise RemoteAgentError("managed process exhausted max_agent_turns")
+            data, raw, response_id = self._managed_shell(cmd)
+            responses.append(raw)
+            ids.append(response_id)
+            if data is not None and data.get("id") != process_id:
+                raise RemoteAgentError("managed-process returned a mismatched ID")
+            return data
+
+        deadline = time.monotonic() + float(self.job.config.limits.timeout_seconds)
+        launched = False
+        try:
+            state = bridge(command)
+            launched = True
+            if state is not None and state.get("status") in ("failed", "not_found"):
+                raise RemoteAgentError(f"managed process failed to start: {state}")
+            # A tool response can be finished while its child is still running;
+            # a subsequent independent status read is authoritative.
+            while True:
+                if state is not None and state.get("status") in ("exited", "failed", "cancelled"):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RemoteAgentError("managed process exceeded configured job deadline")
+                seconds = min(6.0, max(0.0, deadline - time.monotonic()))
+                state = bridge(f"python3 {shlex.quote(self.PROCESS_MANAGER)} wait "
+                               f"{shlex.quote(process_id)} --seconds {seconds:.2f}")
+            if state is None:
+                raise RemoteAgentError("managed process returned no final state")
+            if state.get("status") != "exited" or state.get("exit_code") != 0:
+                raise RemoteAgentError(
+                    f"managed process ended with status={state.get('status')!r}, "
+                    f"exit_code={state.get('exit_code')!r}, "
+                    f"stderr={state.get('stderr_tail', '')[-1500:]!r}")
+            # Tool output is bounded; reconstruct large stdout through durable,
+            # offset-addressed log chunks instead of silently truncating data.
+            stdout_size = state.get('stdout_size', 0)
+            if isinstance(stdout_size, int) and stdout_size > 4096:
+                chunks: list[bytes] = []
+                offset = 0
+                while offset < stdout_size:
+                    piece = bridge(
+                        f"python3 {shlex.quote(self.PROCESS_MANAGER)} read "
+                        f"{shlex.quote(process_id)} --stream stdout "
+                        f"--offset {offset} --length 4096")
+                    if piece is None:
+                        continue
+                    if (piece.get('stream') != 'stdout' or piece.get('offset') != offset
+                            or piece.get('size') != stdout_size):
+                        raise RemoteAgentError('managed stdout chunk is inconsistent')
+                    try:
+                        data = base64.b64decode(piece['data_b64'], validate=True)
+                    except (KeyError, ValueError) as exc:
+                        raise RemoteAgentError('managed stdout chunk is not valid base64') from exc
+                    if not data or piece.get('next_offset') != offset + len(data):
+                        raise RemoteAgentError('managed stdout chunk has invalid length')
+                    chunks.append(data)
+                    offset += len(data)
+                state['stdout_tail'] = b''.join(chunks).decode('utf-8', 'replace')
+            usage = _sum_usages(responses)
             turn = AgentTurn(
-                response_id=str(response.id), status=str(getattr(response,"status","unknown")),
-                output_text="", raw=raw,
-                usage=usage if isinstance(usage, dict) else {},
+                response_id=ids[-1], status="completed", output_text="",
+                raw={"managed_process_id": process_id, "response_ids": ids,
+                     "response_count": len(responses), "usage": usage,
+                     "output": [item for raw in responses for item in raw.get("output", [])]},
+                usage=usage, api_calls=len(responses),
             )
-            return lint_report, turn
+            return state, turn
+        except BaseException:
+            if launched and (state is None or state.get('status') not in
+                             ('exited', 'failed', 'cancelled')):
+                # Best effort: never silently leave a job running after a local
+                # cancellation or hard deadline. If the bridge is unavailable,
+                # the container inactivity expiration provides a final boundary.
+                try:
+                    self._managed_shell(
+                        f"python3 {shlex.quote(self.PROCESS_MANAGER)} cancel "
+                        + shlex.quote(process_id))
+                except Exception:
+                    pass
+            raise
+
+    def run_dollar_lint(self, *, max_api_calls: int) -> tuple[dict[str, Any], AgentTurn]:
+        """Use the general managed executor, never a container file-list poll."""
+        nonce = uuid.uuid4().hex
+        command = [
+            "bash", "/mnt/data/work/runtime/lint-dollar-math.sh",
+            "/mnt/data/work/job/result/main.tex", self.LINT_REPORT_PATH, nonce,
+        ]
+        try:
+            state, turn = self.run_managed_command(command, max_api_calls=max_api_calls)
+            stdout = state.get("stdout_tail", "")
+            if not isinstance(stdout, str):
+                raise RemoteAgentError("managed lint stdout missing")
+            prefix = "CA-DOLLAR-LINT-REPORT-V1 "
+            reports = [line[len(prefix):] for line in stdout.splitlines()
+                       if line.startswith(prefix)]
+            if len(reports) != 1:
+                raise RemoteAgentError(
+                    f"expected exactly one lint report in managed stdout, got {len(reports)}")
+            return _validate_lint_report(json.loads(reports[0]), nonce), turn
         except RemoteAgentError:
             raise
         except Exception as exc:
@@ -508,6 +551,25 @@ def _validate_lint_report(report: Any, nonce: str) -> dict[str, Any]:
     if not isinstance(report.get("findings"), list):
         raise RemoteAgentError("lint report has invalid findings")
     return report
+
+
+def _sum_usages(raw_responses: list[dict[str, Any]]) -> dict[str, Any]:
+    """Account for every Responses call needed to supervise one process."""
+    result: dict[str, Any] = {}
+    for raw in raw_responses:
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        for key, value in usage.items():
+            if isinstance(value, int):
+                result[key] = result.get(key, 0) + value
+            elif isinstance(value, dict):
+                details = result.setdefault(key, {})
+                if isinstance(details, dict):
+                    for detail, n in value.items():
+                        if isinstance(n, int):
+                            details[detail] = details.get(detail, 0) + n
+    return result
 
 
 def _binary_content(value: Any) -> bytes:

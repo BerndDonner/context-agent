@@ -370,209 +370,149 @@ def test_hosted_container_idle_expiration_is_independent_of_job_timeout(
     assert len(requests[0]["file_ids"]) == 2
 
 
-def test_dynamic_lint_shell_bridge_verifies_exact_call_and_fresh_report(
-    tmp_path: Path, job_factory,
-) -> None:  # type: ignore[no-untyped-def]
+def _managed_test_session(tmp_path: Path, job_factory):
     import json
+    import shlex
     import re
 
     job = load_job(job_factory(tmp_path))
     session = object.__new__(OpenAIHostedSession)
     session.job = job
     session.container_id = 'container-1'
-
-    class LintResponses:
-        def __init__(self) -> None:
-            self.corrupt_command = False
-            self.code = 0
-            self.command = ''
-            self.stdout_override: str | None = None
-
-        def create(self, **kwargs):
-            request = kwargs['input'][0]['content'][0]['text']
-            self.command = request.split('\n')[-1]
-            command = self.command + ' echo invalid' if self.corrupt_command else self.command
-            nonce = re.search(r'\b([0-9a-f]{32})$', self.command).group(1)
-            payload = json.dumps({'nonce': nonce, 'findings': []})
-            stdout = ('CA-DOLLAR-LINT-REPORT-V1 ' + payload + '\n'
-                      if self.stdout_override is None else self.stdout_override)
-            raw = {
-                'output': [
-                    {'type': 'shell_call', 'call_id': 'call-1',
-                     'action': {'commands': [command]}},
-                    {'type': 'shell_call_output', 'call_id': 'call-1',
-                     'output': [{'stdout': stdout, 'stderr': '',
-                                 'outcome': {'type': 'exit', 'exit_code': self.code}}]},
-                ],
-                'usage': {'input_tokens': 2, 'output_tokens': 1, 'total_tokens': 3},
-            }
-            return SimpleNamespace(id='lint-response', status='completed',
-                                   model_dump=lambda mode: raw)
-
-    responses = LintResponses()
-    # No containers.files API at all: report travels through the verified
-    # shell_call_output.stdout, even when hidden container files are unlisted.
-    session._client = SimpleNamespace(responses=responses)
-    payload, turn = session.run_dollar_lint()
-    assert payload['findings'] == []
-    assert turn.response_id == 'lint-response'
-    assert 'lint-dollar-math.sh' in responses.command
-    assert turn.usage['total_tokens'] == 3
-
-    responses.corrupt_command = True
-    with pytest.raises(RemoteAgentError, match='exact approved command'):
-        session.run_dollar_lint()
-
-    responses.corrupt_command = False
-    responses.code = 1
-    with pytest.raises(RemoteAgentError, match='lint compilation failed'):
-        session.run_dollar_lint()
-
-    responses.code = 0
-    responses.stdout_override = 'CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated", "findings":[]}\n'
-    with pytest.raises(RemoteAgentError, match='stale'):
-        session.run_dollar_lint()
-
-    responses.stdout_override = ''
-    with pytest.raises(RemoteAgentError, match='exactly one lint report'):
-        session.run_dollar_lint()
-
-    responses.stdout_override = ('CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated","findings":[]}\n'
-                                 'CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated","findings":[]}\n')
-    with pytest.raises(RemoteAgentError, match='exactly one lint report'):
-        session.run_dollar_lint()
-
-    responses.stdout_override = 'CA-DOLLAR-LINT-REPORT-V1 not-json\n'
-    with pytest.raises(RemoteAgentError, match='dynamic ConTeXt lint failed'):
-        session.run_dollar_lint()
-
-
-def _make_in_progress_lint_session(tmp_path: Path, job_factory, *, output_status: str = 'in_progress'):
-    """A completed Response with a shell output that is still running."""
-    import json
-    import re
-
-    job = load_job(job_factory(tmp_path))
-    session = object.__new__(OpenAIHostedSession)
-    session.job = job
-    session.container_id = 'container-1'
-    state: dict[str, Any] = {'lists': 0, 'nonce': None, 'content': None}
-
-    class PendingResponses:
+    state: dict[str, Any] = {'calls': [], 'polls': 0, 'mode': 'normal'}
+    class ManagedResponses:
         def create(self, **kwargs: Any) -> Any:
             command = kwargs['input'][0]['content'][0]['text'].split('\n')[-1]
-            state['nonce'] = re.search(r'\b([0-9a-f]{32})$', command).group(1)
-            raw = {
-                'output': [
-                    {'type': 'shell_call', 'call_id': 'call-1', 'status': 'completed',
-                     'action': {'commands': [command]}},
-                    {'type': 'shell_call_output', 'call_id': 'call-1', 'status': output_status,
-                     'output': [{'stdout': '', 'stderr': '',
-                                 'outcome': {'type': 'exit', 'exit_code': 0}}]},
-                ],
-                'usage': {'input_tokens': 5, 'output_tokens': 1},
-            }
-            return SimpleNamespace(id='pending-lint-response', status='completed',
+            state['calls'].append(command)
+            number = len(state['calls'])
+            # Simulate start returning an IN-PROGRESS shell output with a bogus
+            # preliminary exit_code=0, as observed in the actual Hosted API.
+            in_progress = number == 1 and state['mode'] == 'normal'
+            if state['mode'] == 'corrupt_command':
+                actual_command = command + ' echo surprise'
+            else:
+                actual_command = command
+            if ' start ' in command:
+                pid = re.search(r'\b([0-9a-f]{32})\s+--', command).group(1)
+                state['id'] = pid
+                state['nonce'] = shlex.split(command)[-1]
+                payload = {'id': pid, 'status': 'running'}
+            elif ' wait ' in command:
+                state['polls'] += 1
+                pid = state['id']
+                nonce = state['nonce']
+                if state['mode'] == 'nonzero':
+                    payload = {'id': pid, 'status': 'exited', 'exit_code': 9,
+                               'stderr_tail': 'bad compiler run', 'stdout_tail': ''}
+                elif state['polls'] == 1 and state['mode'] == 'normal':
+                    payload = {'id': pid, 'status': 'running', 'exit_code': None}
+                else:
+                    report = json.dumps({'nonce': ('old' if state['mode'] == 'stale' else nonce),
+                                         'findings': [{'rule_id':'context-dollar-math',
+                                                       'file':'main.tex', 'line': 4,
+                                                       'message':'found', 'repair_hint':'fix'}]})
+                    payload = {'id': pid, 'status': 'exited', 'exit_code': 0,
+                               'stdout_tail': 'CA-DOLLAR-LINT-REPORT-V1 ' + report + '\n',
+                               'stderr_tail': ''}
+            else:
+                payload = {'id': state['id'], 'status': 'running'}
+            text = 'CA-PROCESS-V1 ' + json.dumps(payload) + '\n'
+            raw = {'output': [
+                {'type':'shell_call', 'call_id':'call-1', 'status':'completed',
+                 'action': {'commands':[actual_command]}},
+                {'type':'shell_call_output', 'call_id':'call-1',
+                 'status': ('in_progress' if in_progress else 'completed'),
+                 'output':[{'stdout': ('' if in_progress else text), 'stderr':'',
+                            'outcome':{'type':'exit','exit_code':0}}]},
+            ], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
+            return SimpleNamespace(id=f'resp-{number}', status='completed',
                                    model_dump=lambda mode: raw)
-
-    class ReportContent:
-        def retrieve(self, file_id: str, *, container_id: str) -> Any:
-            assert file_id == 'cfile-report' and container_id == 'container-1'
-            payload = state['content']
-            if payload is None:
-                payload = json.dumps({'nonce': state['nonce'], 'findings': [
-                    {'rule_id': 'context-dollar-math', 'file': 'main.tex', 'line': 4,
-                     'message': 'forbidden math', 'repair_hint': 'use \\m'}
-                ]}).encode()
-            return SimpleNamespace(read=lambda: payload)
-
-    class ReportFiles:
-        content = ReportContent()
-
-        def list(self, container_id: str, **kwargs: Any):
-            state['lists'] += 1
-            assert container_id == 'container-1'
-            assert kwargs == {'limit': 100, 'order': 'desc'}
-            if state['lists'] == 1:
-                return [SimpleNamespace(id='unrelated', path='/mnt/data/work/job/result/main.tex')]
-            return [SimpleNamespace(id='cfile-report', path=session.LINT_REPORT_PATH)]
-
-    session._client = SimpleNamespace(
-        responses=PendingResponses(),
-        containers=SimpleNamespace(files=ReportFiles()),
-    )
+    session._client = SimpleNamespace(responses=ManagedResponses())
     return session, state
 
 
-def test_dynamic_lint_waits_for_in_progress_shell_even_if_outcome_is_exit_zero(
-    tmp_path: Path, job_factory, monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    session, state = _make_in_progress_lint_session(tmp_path, job_factory)
-    sleeps: list[float] = []
-    monkeypatch.setattr(openai_backend.time, 'sleep', lambda seconds: sleeps.append(seconds))
-
-    report, turn = session.run_dollar_lint()
-
-    assert turn.response_id == 'pending-lint-response'
+def test_dynamic_lint_managed_bridge_survives_in_progress_output(tmp_path: Path, job_factory):
+    session, state = _managed_test_session(tmp_path, job_factory)
+    report, turn = session.run_dollar_lint(max_api_calls=10)
     assert report['findings'][0]['line'] == 4
-    assert state['lists'] == 2
-    assert sleeps == [2.0]
+    assert state['polls'] == 2
+    assert len(state['calls']) == 3
+    assert turn.usage['total_tokens'] == 15
+    assert turn.raw['response_count'] == 3
+    assert 'managed-process.py start' in state['calls'][0]
+    assert all('containers' not in entry for entry in state['calls'])
 
 
-def test_dynamic_lint_wait_rejects_stale_report(
-    tmp_path: Path, job_factory, monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    session, state = _make_in_progress_lint_session(tmp_path, job_factory)
-    state['content'] = b'{"nonce":"outdated","findings":[]}'
-    monkeypatch.setattr(openai_backend.time, 'sleep', lambda seconds: None)
+def test_dynamic_lint_managed_nonzero_process_fails_closed(tmp_path: Path, job_factory):
+    session, state = _managed_test_session(tmp_path, job_factory)
+    state['mode'] = 'nonzero'
+    with pytest.raises(RemoteAgentError, match='exit_code=9'):
+        session.run_dollar_lint(max_api_calls=10)
+
+
+def test_dynamic_lint_managed_stale_nonce_fails_closed(tmp_path: Path, job_factory):
+    session, state = _managed_test_session(tmp_path, job_factory)
+    state['mode'] = 'stale'
     with pytest.raises(RemoteAgentError, match='nonce mismatch'):
-        session.run_dollar_lint()
+        session.run_dollar_lint(max_api_calls=10)
 
 
-def test_dynamic_lint_wait_retries_incomplete_json(
+def test_dynamic_lint_managed_rejects_unauthorized_shell_command(tmp_path: Path, job_factory):
+    session, state = _managed_test_session(tmp_path, job_factory)
+    state['mode'] = 'corrupt_command'
+    with pytest.raises(RemoteAgentError, match='changed the approved command'):
+        session.run_dollar_lint(max_api_calls=10)
+
+
+
+def test_managed_bridge_with_real_local_supervisor_and_large_output(
     tmp_path: Path, job_factory, monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    session, state = _make_in_progress_lint_session(tmp_path, job_factory)
-    files = session._client.containers.files
-    real_retrieve = files.content.retrieve
-    tries = 0
+    """Exercise the complete transport including the in-progress API edge case."""
+    import os
+    import subprocess
+    import sys
+    script = Path(__file__).resolve().parents[1] / 'src/context_agent/resources/runtime/managed-process.py'
+    job = load_job(job_factory(tmp_path))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.container_id = 'container-1'
+    session.PROCESS_MANAGER = str(script)
+    monkeypatch.setenv('CONTEXT_AGENT_PROCESS_DIR', str(tmp_path / 'processes'))
 
-    def read_partial_then_complete(file_id: str, *, container_id: str) -> Any:
-        nonlocal tries
-        tries += 1
-        if tries == 1:
-            return SimpleNamespace(read=lambda: b'{"nonce":')
-        return real_retrieve(file_id, container_id=container_id)
-
-    files.content.retrieve = read_partial_then_complete
-    monkeypatch.setattr(openai_backend.time, 'sleep', lambda seconds: None)
-
-    report, _ = session.run_dollar_lint()
-    assert len(report['findings']) == 1
-    assert tries == 2
-    assert state['lists'] == 3
-
-
-def test_dynamic_lint_wait_times_out_without_report(
-    tmp_path: Path, job_factory, monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    session, state = _make_in_progress_lint_session(tmp_path, job_factory)
-    session._client.containers.files.list = lambda container_id, **kw: []
-    clock = [0.0]
-    monkeypatch.setattr(openai_backend.time, 'monotonic', lambda: clock[0])
-    monkeypatch.setattr(openai_backend.time, 'sleep', lambda duration: clock.__setitem__(0, clock[0] + duration))
-
-    with pytest.raises(RemoteAgentError, match='timed out waiting'):
-        session.run_dollar_lint()
-    assert clock[0] == 60.0
-
-
-def test_dynamic_lint_rejects_incomplete_shell_output_without_polling(
-    tmp_path: Path, job_factory,
-) -> None:  # type: ignore[no-untyped-def]
-    session, state = _make_in_progress_lint_session(
-        tmp_path, job_factory, output_status='incomplete'
-    )
-    with pytest.raises(RemoteAgentError, match='incomplete'):
-        session.run_dollar_lint()
-    assert state['lists'] == 0
+    class RealLocalBridge:
+        def __init__(self) -> None:
+            self.counter = 0
+        def create(self, **kwargs: Any) -> Any:
+            self.counter += 1
+            cmd = kwargs['input'][0]['content'][0]['text'].split('\n')[-1]
+            completed = subprocess.run(cmd, shell=True, cwd=tmp_path, capture_output=True,
+                                       text=True, timeout=15, env=os.environ.copy())
+            # Hosted Shell sometimes returns before the output is finalized,
+            # even though the model Response itself reports 'completed'.
+            premature = self.counter == 1
+            raw = {
+                'output': [
+                    {'type': 'shell_call', 'call_id': f'call-{self.counter}',
+                     'status': 'completed', 'action': {'commands': [cmd]}},
+                    {'type': 'shell_call_output', 'call_id': f'call-{self.counter}',
+                     'status': 'in_progress' if premature else 'completed',
+                     'output': [{'stdout': '' if premature else completed.stdout,
+                                 'stderr': '' if premature else completed.stderr,
+                                 'outcome': {'type': 'exit', 'exit_code': 0 if premature
+                                             else completed.returncode}}]},
+                ],
+                'usage': {'input_tokens': 1, 'output_tokens': 2, 'total_tokens': 3},
+            }
+            return SimpleNamespace(id=f'resp-{self.counter}', status='completed',
+                                   model_dump=lambda mode: raw)
+    remote = RealLocalBridge()
+    session._client = SimpleNamespace(responses=remote)
+    state, turn = session.run_managed_command(
+        [sys.executable, '-c', 'print("hello" * 1500)'], cwd=str(tmp_path), max_api_calls=20)
+    assert state['status'] == 'exited'
+    assert state['exit_code'] == 0
+    assert state['stdout_tail'] == 'hello' * 1500 + '\n'
+    assert remote.counter >= 4  # start, wait, and output chunks
+    assert turn.api_calls == remote.counter
+    assert turn.usage['total_tokens'] == remote.counter * 3

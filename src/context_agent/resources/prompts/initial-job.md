@@ -43,3 +43,8 @@ Manifest.
 Wichtig: `main.tex` liegt im Verzeichnis `job/result`. Relative Pfade zu mitgelieferten
 Dateien sollen deshalb vorzugsweise auf `../include/...` zeigen. Passe alte Template-Pfade nur
 soweit technisch nötig an; erfinde kein neues Layout.
+
+
+Längere ConTeXt-Kompilierungen über `managed-process.py start` und wiederholte
+`managed-process.py wait`-Abfragen ausführen (siehe Systemanweisung),
+nicht aus einem vorläufigen Shell-Exit-Code auf den Abschluss schließen.

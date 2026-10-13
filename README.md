@@ -1,4 +1,4 @@
-# context-agent 0.5.0
+# context-agent 0.7.0
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -205,19 +205,19 @@ TeX-/MetaPost-Definitionen werden nicht erfasst. Bei MetaPost-Zeilen kann die
 Meldung auf das Ende des MP-Blocks statt die Beschriftungszeile verweisen;
 Mehrfachtreffer je Zeile werden zusammengefasst.
 
-**API-Besonderheit:** Die Containers API hat keinen unmittelbaren
-Shell-Exec-Endpunkt. Ein zusätzlicher, von der Generierung unabhängiger
-Responses-Aufruf startet deshalb ausschließlich das Lint-Skript. Dessen
-Modell-Freitext wird ignoriert; verarbeitet wird ausschließlich der vom
-Prüf-Satzlauf erzeugte, mit frischem Nonce gekennzeichnete JSON-Befund aus
-`stdout` des verifizierten Shell-Aufrufs. Falls die Responses API zwar
-`response.status=completed`, aber `shell_call_output.status=in_progress` liefert,
-wartet das Backend ohne weiteren Modellaufruf über die Containers-Datei-API
-auf den vollständig geschriebenen JSON-Befund. Der vorläufige Exit-Code zählt
-**nicht** als erfolgreicher Abschluss. Ein Timeout oder fehlender, ungültiger
-Befund ist ein Prüffehler, **kein Erfolg**.
-Dieser Aufruf zählt zu `max_agent_turns` und zur Tokenstatistik, auch bei
-erneuter Prüfung nach einer Reparatur. `max_nogo_repairs` gilt weiterhin.
+**API-Besonderheit:** Die Containers API bietet keinen direkten Shell-Exec-Endpunkt.
+Statt einer Dateilisten-Abfrage startet ein deterministischer Hosted-Shell-Brückenaufruf
+jetzt den generischen Supervisor `runtime/managed-process.py`. Die mit einer UUID
+gekennzeichnete Prozessausführung wird im Container abgekoppelt und schreibt den
+**tatsächlichen Exit-Code** und dauerhafte Logs atomar in `.processes/ID/`.
+Kurze Status-/Wait-Aufrufe im selben Container lesen diesen Zustand. Ein
+`response.status=completed` bei gleichzeitigem `shell_call_output.status=in_progress`
+beendet den **Prozess nicht**, und auch ein vorläufiger Exit-Code 0 gilt niemals
+als Erfolg. Der Lint-Bericht wird aus der gespeicherten Ausgabe geholt und mit
+Nonce validiert, ohne Containers-Dateilisten-Polling. Mehrere kurze Responses-
+Aufrufe sind hierfür erforderlich und werden einzeln auf das Turn-Limit und die
+Tokenstatistik angerechnet. Die Prozesslaufzeit ist von der Pollingdauer getrennt.
+`max_nogo_repairs` gilt unverändert.
 
 Bei MetaPost-Grafiken sollen relevante Punkte und Ereignisse einmal definiert,
 und bei Linien, Beschriftungen und Hilfskonstruktionen **wiederverwendet** werden.
@@ -439,3 +439,42 @@ erkennbares Archiv. Erkannte Archive werden beim Bereitstellen für den Containe
 der vollständige ConTeXt-Baum enthält mehr als 6.000 Dateien. Der Runtime-Helper entfernt den
 privaten Header, entpackt ConTeXt nur für genau einen Übersetzungslauf und löscht den temporären
 Baum auch nach einem Compilerfehler wieder.
+
+## 0.7.0 – Verwaltete Hosted-Prozesse
+
+`runtime/managed-process.py` ist eine allgemeine Container-seitige
+Prozessausführung, inspiriert vom Start/Read/Terminate-Modell von Codex und dem
+Remote-Command-Lebenszyklus von OpenHands. Ein **eindeutiger Prozessname** darf
+nur einmal gestartet werden; damit ist ein Status-Poll niemals ein erneuter Build.
+Der Supervisor startet die Kindprozesse in einer eigenen Prozessgruppe, erfasst
+stdout/stderr als persistente Logs und schreibt deren wirklichen Exit-Code per
+atomarem Austausch einer Statusdatei. Die Shell-Response ist **nicht** das
+Wahrheitssystem für den Prozessabschluss. Die Zustände sind `starting`, `running`,
+`exited`, `failed`, `cancelled` und für unbekannte IDs `not_found`.
+
+Beispiel im vorbereiteten Hosted-Container:
+
+```bash
+p=/mnt/data/work/runtime/managed-process.py
+python3 "$p" start --cwd /mnt/data/work/job/result build01 -- bash \
+  /mnt/data/work/runtime/bootstrap-context.sh --compile \
+  /mnt/data/work/job/result/main.tex /mnt/data/work/job/result/context.log
+python3 "$p" wait build01 --seconds 5  # erneut aufrufen, bis beendet
+python3 "$p" status build01
+python3 "$p" read build01 --stream stderr --offset 0 --length 4096
+python3 "$p" cancel build01  # nur wenn wirklich abgebrochen werden soll
+```
+
+`--seconds` ist die maximale Dauer **eines einzelnen Statusabrufs**, keine
+Laufzeitgrenze für ConTeXt. Ein hartes Zeitlimit bleibt das übergeordnete
+Joblimit. Auch sehr lange Ausgaben sind über stückweise, base64-kodierte
+`read`-Antworten vollständig abrufbar. Beim Abbruch wird die Prozessgruppe
+zunächst mit SIGTERM und nötigenfalls mit SIGKILL beendet. Die Daten unter
+`.processes/` gelten pro Container und werden bei `resume` bewusst **nicht**
+containerübergreifend weitergeführt.
+
+Die Modellanweisungen empfehlen diese Schnittstelle auch für längere allgemeine
+Kompilierkommandos. Der automatische No-go-Linter verwendet sie direkt und
+modellunabhängig über die kontrollierte Shell-Brücke. Das Modell hat innerhalb
+seiner sonstigen Shell-Ausführung weiterhin eigenen Handlungsspielraum; direkte
+Shell-Aufrufe werden nicht vom Python-Backend abgefangen.
