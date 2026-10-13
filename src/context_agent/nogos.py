@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Protocol, cast
 
+from context_agent.context_math import check as check_context_math
 from context_agent.models import (
     NogoCheckerFailure,
     NogoFinding,
@@ -128,7 +129,9 @@ def run_checkers(
     findings: list[NogoFinding] = []
     failures: list[NogoCheckerFailure] = []
 
-    for checker in checkers:
+    # Mandatory conventions are independent of optional job-specific checkers.
+    builtin = LoadedChecker("context-math", Path(__file__), check_context_math)
+    for checker in [builtin, *checkers]:
         try:
             raw_findings = checker.check(context)
             if not isinstance(raw_findings, list):

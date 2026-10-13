@@ -904,8 +904,8 @@ Abbruch wegen Seitenlimit, Modellbudget oder Review-Fehler bedeutet einen
 fehlgeschlagenen Lauf, niemals stillschweigende Annahme eines perfekten Ergebnisses.
 
 Ein minimaler Hosted-Shell-API-End-to-End-Lauf mit `examples/minimal-job`
-war erfolgreich; für die **neue auftragsbezogene Reproduktionsprüfung** steht der
-Live-Test noch aus. Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die
+war erfolgreich; die auftragsbezogene Reproduktionsprüfung wurde anschließend im
+CTC-Livetest mit einer automatischen Reparaturrunde erfolgreich ausgeführt. Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die
 Orchestratorlogik;
 die `plotmod-api.md`-Beispiele wurden unabhängig mit dem gelieferten ConTeXt-LMTX
 real kompiliert.
@@ -929,3 +929,27 @@ Container und zur nötigen Abfolge mehrerer Requests. Deshalb wird
 die explizite Einstellung `processing.mode=batch` schon bei der
 Jobvalidierung abgelehnt, statt einen anderen Tarif vorzutäuschen.
 Container-/Toolkosten sind separat von Tokenpreisen zu betrachten.
+
+
+## Reproduzierbare ConTeXt-Quellen: No-go und Grafikstruktur (0.3.1)
+
+Der No-go `context-dollar-math` wird als **Built-in** in `run_checkers`
+vor den optionalen Job-Checkern ausgeführt, auch wenn `nogo_directory`
+explizit überschrieben oder gar nicht vorhanden ist. Er prüft `main.tex`
+auf unescaped TeX-Dollar-Mathe außerhalb von Kommentaren, `\type{}`,
+`\starttyping`, MP- und Lua-Codeblöcken. Er erzeugt `NogoFinding` mit
+Datei, Zeile und Reparaturhinweis. Die vorhandene Workflow-Schleife
+kompiliert und prüft die korrigierte Fassung erneut; keine besondere
+Reproduktionsoption muss eingeschaltet werden. `limits.max_nogo_repairs`
+gilt weiterhin. Im Fehlerfall bleiben die Include-Dateien unberührt.
+
+Die Systemanweisung verwendet ausschließlich `\m{}` oder
+`\startformula ... \stopformula` für mathematische Notation.
+MetaPost-Punkte, Signalereignisse und davon abhängige Koordinaten sollen
+zentral definiert und wiederverwendet werden. Diese zweite Regel ist
+nicht als deterministischer No-go formuliert, da dieselben numerischen
+Konstanten in zwei unabhängigen Konstruktionselementen korrekt sein können.
+
+Der inzwischen durchgeführte CTC-Livetest (`gpt-6-sol`) erreichte
+`status=success` mit vier Agent-Runden und einer Reproduktionsreparatur.
+Er lief noch **vor** dem neuen Built-in und vor einem Flex-Livetest.

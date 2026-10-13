@@ -1,4 +1,4 @@
-# context-agent 0.3
+# context-agent 0.3.1
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -182,6 +182,26 @@ beobachtete Service-Tiers, sofern diese in der Antwort stehen.
 - `immutable`: fachliche Aussagen, Zahlen und Bedingungen bleiben unverändert
 - `editable`: redaktionelle Bearbeitung ist erlaubt
 - `guidance`: freie sinnvolle Ausarbeitung ist erlaubt
+
+### Verbindliche ConTeXt-Mathematik-Konvention (seit 0.3.1)
+
+`main.tex` muss für Inline-Mathematik `\m{...}` und für abgesetzte Formeln
+`\startformula ... \stopformula` verwenden. TeX-/LaTeX-typische
+`$...$` und `$$...$$` sind in generiertem ConTeXt-Quelltext verboten.
+Der **eingebaute** No-go-Checker `context-dollar-math` läuft bei **jedem Job**,
+unabhängig von `nogo_directory`, nach dem Compile und **vor** der
+Reproduktionsprüfung und der Übernahme von `include/`. Er meldet genaue
+Zeilennummern und löst über `limits.max_nogo_repairs` die bereits vorhandene
+automatische Reparaturschleife aus. Bleiben Verstöße bestehen, schlägt
+der Job fehl. Literalbeispiele (`\type{...}`, `\starttyping`), Kommentare
+und MetaPost-/Lua-Code werden nicht fälschlich als Formeltext geprüft.
+Der Check kontrolliert die Syntax von `main.tex`, **nicht** die fachliche
+Richtigkeit mathematischer Ausdrücke.
+
+Bei MetaPost-Grafiken sollen relevante Punkte und Ereignisse einmal definiert,
+und bei Linien, Beschriftungen und Hilfskonstruktionen **wiederverwendet** werden.
+Das ist bewusst eine allgemeine **Generierungsvorgabe**, kein pauschales
+Verbot fester Zahlen: Maße, Abstände und unabhängige Koordinaten bleiben erlaubt.
 
 ## Ausführen
 

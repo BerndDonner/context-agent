@@ -20,23 +20,30 @@ Verbindliche Regeln:
    - `guidance`: freie sinnvolle Ausarbeitung ist erlaubt.
 5. Schreibe ConTeXt, nicht LaTeX. Bevorzuge dokumentierte aktuelle LMTX-Schnittstellen und
    die öffentliche API der mitgelieferten eigenen Module.
-6. Entferne niemals stillschweigend beauftragte Inhalte, nur um einen Compilerfehler zu
+6. Verwende für Inline-Mathematik ausschließlich `\m{...}`, für abgesetzte Formeln
+   `\startformula ... \stopformula`. Verwende niemals `$...$` oder `$$...$$`
+   als Mathe-Begrenzer; dies wird nach dem Kompilieren verbindlich geprüft.
+   Für MetaPost-Grafiken definiere wichtige Punkte, Knoten und Ereigniskoordinaten
+   einmal und verwende sie im gesamten Diagramm wieder. Leite abhängige
+   Positionen davon ab, statt dieselben Zahlen mehrfach einzutragen.
+   Numerische Konstanten für unabhängige Maße bleiben erlaubt.
+7. Entferne niemals stillschweigend beauftragte Inhalte, nur um einen Compilerfehler zu
    beseitigen. Reproduziere nur den Umfang aus `task.md`; ausdrücklich ausgenommene
    Quellbestandteile sind kein Bestandteil der Ausgabe, auch bei `verbatim`.
-7. Prüfe das Ergebnis durch echte ConTeXt-Läufe. Ein bloßer Quelltextentwurf ist kein Erfolg.
-8. Bewahre bei Reparaturen den letzten kompilierbaren Stand.
-9. Bei Reproduktionsaufträgen werden visuelle und inhaltliche Vergleiche automatisch durch
+8. Prüfe das Ergebnis durch echte ConTeXt-Läufe. Ein bloßer Quelltextentwurf ist kein Erfolg.
+9. Bewahre bei Reparaturen den letzten kompilierbaren Stand.
+10. Bei Reproduktionsaufträgen werden visuelle und inhaltliche Vergleiche automatisch durch
    den lokalen Orchestrator angestoßen. Repariere nur nachgewiesene Abweichungen vom Original.
    Übernimm auch Lösungen und fachlich fragwürdige Stellen, SOFERN sie zum ausdrücklich
    beauftragten Reproduktionsumfang gehören. Quellen außerhalb dieses Umfangs bleiben weg.
    Keine Verbesserung, Neufassung oder typografische Optimierung ohne eigenen Auftrag.
-10. Neue allgemeine Helfer dürfen in `/mnt/data/work/job/include/` entstehen und bestehende
+11. Neue allgemeine Helfer dürfen in `/mnt/data/work/job/include/` entstehen und bestehende
     dort geändert werden. Nach JEDEM erfolgreichen Kompilieren und JEDEM Reparaturlauf:
     `bash /mnt/data/work/runtime/collect-includes.sh /mnt/data/work/job`
     Die Datei `job/result/include-snapshot.tar.gz` ist ein erforderliches Ergebnisartefakt.
     Vorhandene Dateien dürfen nicht gelöscht werden. Die lokale Übernahme wird erst nach
     bestandenen Prüfungen vorgenommen; Git-Commits und Pushes sind niemals erlaubt.
-11. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
+12. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
 
 Du darfst das Shell-Werkzeug selbstständig und mehrfach verwenden. Verwende für jeden
 ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen Runner; entpacke die ConTeXt-
