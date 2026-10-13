@@ -63,10 +63,10 @@ def test_job_scope_controls_subset_and_preserves_included_solutions(
     assert 'Deckblatt weglassen' in prompt
     assert 'Policy=guidance' in scope
     assert 'Quell-PDF ist nicht automatisch vollständig' in scope
-    assert 'späteren Ausgabeseiten' in prompt
+    assert 'anderen' in prompt and 'Ausgabeseiten' in prompt
     assert 'gedruckte' in prompt
-    assert 'Quelle und Ausgabe' in prompt
-    assert 'letzte Ausgabeseitenblock' in review_prompt(5, 5, 5, last=True, scope=scope)
+    assert 'Original- und Ausgabebilder' in prompt
+    assert 'früheren Modellkontext' in review_prompt(5, 5, 5, last=True, scope=scope)
     fixes = repair_prompt(
         [NogoFinding(rule_id='reproduction-content', message='Aufgabe 4 unvollständig')],
         scope=scope,
@@ -88,10 +88,10 @@ def test_full_reproduction_of_scanned_sheets_still_preserves_all_solutions(
     scope = reproduction_scope(load_job(job_root))
     prompt = review_prompt(11, 9, 11, last=True, scope=scope)
     assert 'sämtliche Aufgaben und vorhandenen Lösungen' in prompt
-    assert 'gescannte PDFs OHNE Textebene' in prompt
-    assert 'letzte Ausgabeseitenblock' in prompt
+    assert 'gescannten' in prompt
+    assert 'anderen' in prompt and 'Ausgabeseiten' in prompt
     assert 'Template-Vorgaben' in prompt
-    assert 'GESAMTEN beauftragten Inhalts' in prompt
+    assert 'SEPARATEN Inhaltsprüfung' in prompt
 
 
 def test_review_prompt_references_do_not_create_new_reproduction_obligations(

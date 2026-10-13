@@ -172,8 +172,9 @@ def missing_prompt(pending: list[InventoryEntry], *, scope: str) -> str:
     data = json.dumps([i.as_dict() for i in pending], ensure_ascii=False)
     return f'''ABSCHLIESSENDE INHALTSKONTROLLE – NUR NOCH NICHT ZUGEORDNETE EINTRÄGE.
 {scope}
-Alle Ausgabeseiten wurden bereits nacheinander als Bilder gezeigt. Beziehe
-DICH AUF ALLE bisher gesehenen Seiten, nicht nur die letzte. Die Einträge
+Alle Ausgabeseiten sind DIESEM unabhängigen Aufruf als Bilder beigefügt.
+Prüfe alle hier angehängten Ausgabeseiten gemeinsam; du hast keinen früheren
+Erzeugungs- oder Prüfverlauf. Die Einträge
 wurden bislang nicht sicher zugeordnet:
 {data}
 Bestätige als missing ausschließlich nachweislich im GESAMTEN erzeugten PDF

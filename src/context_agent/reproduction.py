@@ -71,55 +71,52 @@ Zusätzliche Referenzen (keine eigenständige Übernahmepflicht):
 
 
 def review_prompt(total: int, start_page: int, end_page: int, *, last: bool,
-                  scope: str) -> str:
-    if last:
-        end_note = ("Dies ist der letzte Ausgabeseitenblock. Prüfe jetzt zusätzlich "
-                    "die Vollständigkeit des GESAMTEN beauftragten Inhalts unter "
-                    "Berücksichtigung ALLER zuvor gesehenen Ausgabeseiten. "
-                    "Fehlendes nur melden, wenn es im gesamten Dokument nachweislich "
-                    "fehlt; ordne den Befund einer plausiblen Ausgabeseite zu. "
-                    "Wenn du das nicht sicher überblicken kannst: uncertainty statt finding.")
-    else:
-        end_note = ("Weitere Ausgabeseiten folgen. Prüfe nur die sichtbaren Seiten auf "
-                    "konkrete Wiedergabefehler; behaupte NICHT, dass Quellpassagen "
-                    "fehlen, denn sie könnten auf späteren Ausgabeseiten stehen.")
-    return f'''Prüfe AUSSCHLIESSLICH die Reproduktion gemäß dem KONKRETEN JOB-AUFTRAG,
-anhand der bereits bereitgestellten Quelldokumente und der angehängten
-Abbildungen der erzeugten PDF-Seiten {start_page}–{end_page} von {total}.
-Die Bilder sind aufsteigend angeordnet; das erste ist Ausgabeseite {start_page}.
+                  scope: str, source_labels: list[str] | None = None,
+                  inventory: list[dict[str, Any]] | None = None) -> str:
+    labels = source_labels or []
+    source_description = "\n".join(
+        f"  {index}: ORIGINAL {label}" for index, label in enumerate(labels, 1)
+    ) or "  Keine Bildquellen; verwende das angehängte Quelleninventar."
+    inventory_data = json.dumps(inventory or [], ensure_ascii=False)
+    return f"""Prüfe AUSSCHLIESSLICH die sichtbare Reproduktion gemäß dem KONKRETEN
+JOB-AUFTRAG. Dies ist eine EIGENSTÄNDIGE Prüfung ohne früheren Modellkontext.
 
 {scope}
 
+Die Bildreihenfolge in DIESER Anfrage ist ausdrücklich:
+{source_description}
+Danach folgen {end_page - start_page + 1} AUSGABE-Bilder, Seiten
+{start_page} bis {end_page} von insgesamt {total} Ausgabeseiten.
+Verwechsle niemals Original- und Ausgabebilder.
+
+Quelleninventar als zusätzliche Referenz (kein Beleg für korrekte Ausgabe):
+{inventory_data}
+
 VERGLEICHSREGELN:
-- Maßgeblich ist der in task.md festgelegte Umfang. AUSDRÜCKLICH ausgeschlossene
-  Kapitel, Aufgaben, Seitenbestandteile, Logos, Lösungen etc. NICHT verlangen.
-- Innerhalb dieses Umfangs den unter den Eingabe-Policies geforderten Inhalt
-  originalgetreu prüfen: auch Zahlen, Formeln, Beschriftungen und gedruckte
-  Lösungen, wenn sie zum beauftragten Inhalt gehören. Keine eigenmächtige
-  Korrektur fachlich falscher oder ungeschickter Originalstellen.
-- Die Template-Vorgaben haben für den Dokumentkopf Vorrang vor dem Quell-PDF,
-  soweit der Auftrag nichts anderes bestimmt.
-- Für gescannte PDFs OHNE Textebene zählt auch visuell lesbarer Quellinhalt.
-  Grafische Details und Diagrammbeziehungen anhand der Vorlage kontrollieren.
-- Keine fachliche, sprachliche oder typografische Optimierung. Seitenumbrüche
-  und freie Flächen dürfen abweichen; ignoriere subjektive Layoutpräferenzen.
-- Melde nur eindeutig belegbare, bedeutsame Fehler im BEAUFTRAGTEN Inhalt:
-  fehlende/veränderte Elemente, abgeschnittene Grafiken, unlesbare Überlagerungen.
-  Keine pauschalen 'alles aus dem Quell-PDF fehlt'-Befunde.
-- Vergleiche NICHT Original- und Ausgabeseiten nach Seitenzahl oder Pixelgleichheit.
-  Quelle und Ausgabe können verschieden viele Seiten haben.
-- Unsichere Fälle nur als 'uncertainties'; sie lösen keine Reparatur aus.
-{end_note}
+- Maßgeblich ist der in task.md festgelegte Umfang; ausdrücklich
+  ausgeschlossene Inhalte dürfen fehlen.
+- Werte, Formeln, gedruckte Lösungen und Diagrammbeziehungen gegenüber
+  den sichtbaren Originalen prüfen. Auch gescannte PDFs OHNE Textebene
+  sind visuell gültige Quellen. Originalfehler NICHT verbessern.
+- Template-Vorgaben haben bei ausdrücklich ersetztem Kopf Vorrang.
+- Fachliche oder typografische Optimierung ist nicht beauftragt.
+  Seitenumbrüche und freie Flächen dürfen abweichen.
+- Diese Anfrage zeigt nur einen Ausgabeseitenblock. Behaupte NICHT,
+  dass Inhalte IM GESAMTEN AUSGABEDOKUMENT fehlen, weil sie auf anderen
+  Seiten liegen könnten. Globale Vollständigkeit ist Aufgabe der
+  SEPARATEN Inhaltsprüfung.
+- Melde nur konkret belegbare grafische Fehler auf den sichtbaren
+  Ausgabeseiten. Zweifel in uncertainties, nie als sicheren Befund.
 
 WICHTIG: NUR PRÜFEN, KEINE DATEIEN ÄNDERN, KEINE SHELL-AKTION.
-Antworte mit genau einem JSON-Objekt ohne Markdown (Schema):
+Antworte mit genau einem JSON-Objekt ohne Markdown:
 {{"findings":[{{"type":"content|visual","output_page":{start_page},
-"source_page":null,"message":"konkret belegbare Abweichung",
-"repair_hint":"nur den beauftragten Originalinhalt wiederherstellen",
-"confidence":0.95}}], "uncertainties":["optionale konkrete Unsicherheit"]}}
+"source_page":null,"message":"konkrete Abweichung",
+"repair_hint":"beauftragten Originalinhalt wiederherstellen",
+"confidence":0.95}}], "uncertainties":["konkrete Unsicherheit"]}}
 Nur confidence >= 0.85 UND eindeutig belegbare Abweichungen gehören in findings.
 Ist alles in Ordnung: {{"findings":[],"uncertainties":[]}}.
-'''
+"""
 
 
 def repair_prompt(findings: list[NogoFinding], *, scope: str) -> str:

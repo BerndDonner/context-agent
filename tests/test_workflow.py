@@ -354,10 +354,9 @@ def test_multibatch_review_defers_global_omission_check(
             review_prompts.append(prompt)
             assert len(pages) <= 2
             if len(review_prompts) == 3:
-                # Global completeness on the last batch can refer to an
-                # output page shown during an earlier batch.
-                return self._turn('v3', '{"findings":[{"type":"content",'
-                                  '"output_page":1,"source_page":4,"message":"missing",'
+                # Each stateless visual batch can only report its own page.
+                return self._turn('v3', '{"findings":[{"type":"visual",'
+                                  '"output_page":5,"source_page":1,"message":"clipped",'
                                   '"confidence":0.99}],"uncertainties":[]}')
             return self._turn(f'v{len(review_prompts)}',
                               '{"findings":[],"uncertainties":[]}')
@@ -366,10 +365,10 @@ def test_multibatch_review_defers_global_omission_check(
                      MultiPageSession(job))
     assert report.status == 'failed'  # Reproduction repair deliberately disabled
     assert report.review_findings
-    assert 'PDF-Seite 1' in report.review_findings[0].message
+    assert 'PDF-Seite 5' in report.review_findings[0].message
     assert len(review_prompts) == 3
-    assert all('späteren Ausgabeseiten' in prompt for prompt in review_prompts[:2])
-    assert 'GESAMTEN beauftragten Inhalts' in review_prompts[2]
+    assert all('SEPARATEN Inhaltsprüfung' in prompt for prompt in review_prompts)
+    assert all('unabhängig' in prompt.lower() or 'EIGENSTÄNDIGE' in prompt for prompt in review_prompts)
 
 
 def test_unresolved_source_uncertainty_blocks_success_and_include_sync(
@@ -497,5 +496,168 @@ def test_scanned_pdf_is_inventoried_from_images_without_ocr(
     assert report.source_inventory[0]['kind'] == 'solution'
     assert len(report.usage_by_phase) == 4
     assert [phase['phase'] for phase in report.usage_by_phase] == [
-        'initial', 'inventory-source', 'review-content', 'review-reproduction',
+        'inventory-source', 'initial', 'review-content', 'review-reproduction',
     ]
+
+
+def test_preinventory_and_reviews_are_stateless_but_repairs_keep_generation_chain(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    root = job_factory(tmp_path, max_turns=12)
+    configure_reproduction_source(root)
+    (root / 'job.yaml').open('a').write('\nreview:\n  reproduction: true\n')
+
+    class ChainSession(ReviewSession):
+        def __init__(self, job):  # type: ignore[no-untyped-def]
+            super().__init__(job)
+            self.generation_id = None
+            self.inventory_complete = False
+            self.seen_visual = False
+
+        def review_text(self, prompt: str, previous_response_id: str | None) -> AgentTurn:
+            assert previous_response_id is None
+            assert self.generation_id is None, 'Inventory must precede generation'
+            self.inventory_complete = True
+            return super().review_text(prompt, previous_response_id)
+
+        def run_initial(self, prompt: str) -> AgentTurn:
+            assert self.inventory_complete
+            assert 'VORAB ERSTELLTES QUELLENINVENTAR' in prompt
+            result = super().run_initial(prompt)
+            self.generation_id = result.response_id
+            return result
+
+        def review_pages(self, prompt: str, previous_response_id: str | None,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            assert previous_response_id is None
+            result = super().review_pages(prompt, previous_response_id, pages)
+            if 'Prüfe AUSSCHLIESSLICH' in prompt:
+                self.seen_visual = True
+            return result
+
+        def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
+            assert previous_response_id == self.generation_id
+            return super().run_followup(prompt, previous_response_id)
+
+    captured: list[ChainSession] = []
+    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
+        session = ChainSession(job)
+        captured.append(session)
+        return session
+
+    report = run_job(root, session_factory=factory)
+    assert report.status == 'success', report.errors
+    assert captured[0].seen_visual
+    assert report.review_repairs == 1
+    assert report.usage_by_phase[0]['phase'] == 'inventory-source'
+
+
+def test_visual_comparison_gets_original_scan_again_in_every_batch(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    import fitz
+    root = job_factory(tmp_path, max_turns=15)
+    scan = root / 'input/scan.pdf'
+    source_doc = fitz.open()
+    for i in range(2):
+        source_doc.new_page().insert_text((70, 70), f'Scan original {i + 1}')
+    source_doc.save(scan)
+    source_doc.close()
+    config = root / 'job.yaml'
+    config.write_text(config.read_text().replace(
+        'input/notes.md\n    role: content\n    policy: guidance',
+        'input/scan.pdf\n    role: recreate\n    policy: verbatim',
+    ) + '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_repairs: 0\n')
+
+    class SourceAgainSession(ReviewSession):
+        def __init__(self, job):  # type: ignore[no-untyped-def]
+            super().__init__(job)
+            self.visual_calls = 0
+
+        def _write_pdf_and_log(self) -> None:
+            doc = fitz.open()
+            for i in range(2):
+                doc.new_page().insert_text((70, 70), f'Scan original {i + 1}')
+            doc.save(self.remote / 'main.pdf')
+            doc.close()
+            (self.remote / 'context.log').write_text('OK')
+            make_snapshot(self.job.include_dir, self.remote / 'include-snapshot.tar.gz')
+
+        def review_pages(self, prompt: str, previous_response_id: str | None,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            assert previous_response_id is None
+            if 'ERSTELLE NUR EIN INHALTSINVENTAR' in prompt:
+                page = 2 if 'Quelle-Seiten 2 bis 2' in prompt else 1
+                return self._turn('source', '{"entries":[{"source_page":' + str(page) +
+                                  ',"kind":"text","anchor":"Original",'
+                                  '"detail":"Scan original"}],"uncertainties":[]}')
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                return self._turn('content', '{"present":["s1p1-1","s1p2-1"],'
+                                  '"mismatches":[],"uncertainties":[]}')
+            self.visual_calls += 1
+            assert len(pages) == 3  # Original pages 1, 2 + one output page
+            assert 'input/scan.pdf, Originalseite 1' in prompt
+            assert 'input/scan.pdf, Originalseite 2' in prompt
+            assert all(p.is_file() for p in pages)
+            return self._turn('visual', '{"findings":[],"uncertainties":[]}')
+
+    captured: list[SourceAgainSession] = []
+    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
+        session = SourceAgainSession(job)
+        captured.append(session)
+        return session
+    report = run_job(root, session_factory=factory)
+    assert report.status == 'success', report.errors
+    assert captured[0].visual_calls == 2
+
+
+def test_missing_content_check_sees_all_output_pages_without_previous_context(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    import fitz
+    root = job_factory(tmp_path, max_turns=12)
+    configure_reproduction_source(root)
+    (root / 'job.yaml').open('a').write(
+        '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_repairs: 0\n')
+
+    class MissingSession(FakeSession):
+        def __init__(self, job):  # type: ignore[no-untyped-def]
+            super().__init__(job)
+            self.missing_images = 0
+
+        def _write_pdf_and_log(self) -> None:
+            doc = fitz.open()
+            for index in range(3):
+                doc.new_page().insert_text((70, 70), f'Output {index + 1}')
+            doc.save(self.remote / 'main.pdf')
+            doc.close()
+            (self.remote / 'context.log').write_text('OK')
+            make_snapshot(self.job.include_dir, self.remote / 'include-snapshot.tar.gz')
+
+        def review_text(self, prompt: str, previous_response_id: str | None) -> AgentTurn:
+            assert previous_response_id is None
+            return self._turn('inventory', '{"entries":[{"source_page":1,"kind":"solution",'
+                              '"anchor":"Lösung","detail":"42"}],"uncertainties":[]}')
+
+        def review_pages(self, prompt: str, previous_response_id: str | None,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            assert previous_response_id is None
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                assert len(pages) == 1
+                return self._turn('not-found-here', '{"present":[],"mismatches":[],"uncertainties":[]}')
+            if 'ABSCHLIESSENDE INHALTSKONTROLLE' in prompt:
+                self.missing_images = len(pages)
+                assert len(pages) == 3, 'Full document must be attached for missing review'
+                return self._turn('missing', '{"missing":[],"uncertainties":[]}')
+            return self._turn('visual', '{"findings":[],"uncertainties":[]}')
+
+    sessions: list[MissingSession] = []
+    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
+        session = MissingSession(job)
+        sessions.append(session)
+        return session
+
+    report = run_job(root, session_factory=factory)
+    assert report.status == 'needs_review', report.errors
+    assert sessions[0].missing_images == 3
+    assert any('weder sicher gefunden' in detail for detail in report.content_uncertainties)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -88,7 +89,32 @@ def run_job(
             session = session_factory(job, bundle_path, direct_files, system_prompt)
             report.remote_container_id = session.container_id
 
+            # Capture the sources BEFORE creation, in stateless model requests.
+            # Keep rendered source pages alive for subsequent independent visual
+            # comparisons, including after a repair cycle.
+            scope = reproduction_scope(job) if job.config.review.reproduction else ""
+            source_entries: list[InventoryEntry] = []
+            source_uncertainties: list[str] = []
+            source_visuals: list[tuple[str, Path]] = []
+            if job.config.review.reproduction:
+                source_entries, source_uncertainties, source_visuals = _inventory_sources(
+                    session=session, job=job, scope=scope,
+                    source_directory=Path(temporary) / "source-pages",
+                    report=report, transcript_path=transcript_path,
+                )
+                report.source_inventory = [entry.as_dict() for entry in source_entries]
+
+            if not _may_turn(report, job):
+                raise ContextAgentError(
+                    'Source inventory consumed all max_agent_turns before generation; '
+                    'increase limits.max_agent_turns. No document was generated.')
             initial_prompt = render_initial_prompt(job, prompt_dir)
+            if job.config.review.reproduction:
+                initial_prompt += ("\n\nVORAB ERSTELLTES QUELLENINVENTAR (nur Checkliste; "
+                                   "task.md und die Originalquellen bleiben maßgeblich):\n" +
+                                   json.dumps(report.source_inventory, ensure_ascii=False) +
+                                   "\nUnklare Originalstellen NICHT erraten:\n" +
+                                   json.dumps(source_uncertainties, ensure_ascii=False))
             turn = _call_turn(
                 session=session,
                 prompt=initial_prompt,
@@ -124,8 +150,6 @@ def run_job(
 
             nogo_repairs = 0
             review_repairs = 0
-            source_entries: list[InventoryEntry] | None = None
-            source_uncertainties: list[str] = []
             while not report.checker_failures:
                 assert state.main_tex is not None
                 assert state.include_snapshot is not None
@@ -173,13 +197,6 @@ def run_job(
                 report.content_findings = []
                 report.content_uncertainties = []
                 if job.config.review.reproduction:
-                    scope = reproduction_scope(job)
-                    if source_entries is None:
-                        source_entries, source_uncertainties, turn = _inventory_sources(
-                            session=session, job=job, scope=scope, previous=turn,
-                            report=report, transcript_path=transcript_path,
-                        )
-                        report.source_inventory = [entry.as_dict() for entry in source_entries]
                     report.content_uncertainties = list(source_uncertainties)
 
                     assert state.main_pdf is not None
@@ -195,12 +212,12 @@ def run_job(
                             prompt = output_prompt(source_entries, scope=scope,
                                                    start=offset + 1, end=offset + len(batch),
                                                    total=len(output_pages))
-                            turn = _call_review(
-                                session=session, prompt=prompt, previous_response_id=turn.response_id,
+                            checked = _call_review(
+                                session=session, prompt=prompt, previous_response_id=None,
                                 pages=batch, report=report, transcript_path=transcript_path,
                                 phase="review-content",
                             )
-                            result = parse_output_check(turn.output_text, entries=source_entries,
+                            result = parse_output_check(checked.output_text, entries=source_entries,
                                                         start=offset + 1, end=offset + len(batch))
                             present.update(result.present)
                             content_findings.extend(result.findings)
@@ -210,14 +227,16 @@ def run_job(
                                    if entry.id not in present and entry.id not in mismatched_ids]
                         if pending:
                             _require_review_turn(report, job)
-                            turn = _call_review_text(
+                            missing_review = _call_review(
                                 session=session,
                                 prompt=missing_prompt(pending, scope=scope),
-                                previous_response_id=turn.response_id,
+                                previous_response_id=None,
+                                pages=output_pages,  # ALL pages, not earlier model memory
                                 phase="review-content-missing",
                                 report=report, transcript_path=transcript_path,
                             )
-                            missing_findings, uncertainties = parse_missing(turn.output_text, pending)
+                            missing_findings, uncertainties = parse_missing(
+                                missing_review.output_text, pending)
                             content_findings.extend(missing_findings)
                             report.content_uncertainties.extend(uncertainties)
                         if not source_entries:
@@ -253,18 +272,22 @@ def run_job(
                         for offset in range(0, len(pages), batch_size):
                             _require_review_turn(report, job)
                             batch = pages[offset:offset + batch_size]
-                            is_last = offset + len(batch) == len(pages)
                             prompt = review_prompt(len(pages), offset + 1, offset + len(batch),
-                                                   last=is_last, scope=scope)
-                            # A review turn cannot execute shell commands or edit files.
-                            turn = _call_review(session=session, prompt=prompt,
-                                                previous_response_id=turn.response_id,
-                                                pages=batch, report=report,
-                                                transcript_path=transcript_path,
-                                                phase="review-reproduction")
-                            review = parse_review(turn.output_text,
-                                                  start_page=1 if is_last else offset + 1,
-                                                  end_page=len(pages) if is_last else offset + len(batch))
+                                                   last=(offset + len(batch) == len(pages)),
+                                                   scope=scope,
+                                                   source_labels=[name for name, _ in source_visuals],
+                                                   inventory=report.source_inventory)
+                            # Originals first, then this output batch. Every visual
+                            # reviewer sees the originals but no generator transcript.
+                            visual_pages = tuple(path for _, path in source_visuals) + batch
+                            checked = _call_review(session=session, prompt=prompt,
+                                                   previous_response_id=None,
+                                                   pages=visual_pages, report=report,
+                                                   transcript_path=transcript_path,
+                                                   phase="review-reproduction")
+                            review = parse_review(checked.output_text,
+                                                  start_page=offset + 1,
+                                                  end_page=offset + len(batch))
                             review_findings.extend(review.findings)
                             report.review_uncertainties.extend(review.uncertainties)
                     report.review_findings = review_findings
@@ -359,7 +382,7 @@ def _call_turn(
 
 
 def _call_review(
-    *, session: AgentSession, prompt: str, previous_response_id: str,
+    *, session: AgentSession, prompt: str, previous_response_id: str | None,
     pages: tuple[Path, ...], report: RunReport, transcript_path: Path,
     phase: str = "review-reproduction",
 ) -> AgentTurn:
@@ -377,7 +400,7 @@ def _call_review(
 
 
 def _call_review_text(
-    *, session: AgentSession, prompt: str, previous_response_id: str,
+    *, session: AgentSession, prompt: str, previous_response_id: str | None,
     report: RunReport, transcript_path: Path, phase: str,
 ) -> AgentTurn:
     turn = session.review_text(prompt, previous_response_id)
@@ -401,74 +424,77 @@ def _require_review_turn(report: RunReport, job: ResolvedJob) -> None:
 
 def _inventory_sources(
     *, session: AgentSession, job: ResolvedJob, scope: str,
-    previous: AgentTurn, report: RunReport, transcript_path: Path,
-) -> tuple[list[InventoryEntry], list[str], AgentTurn]:
-    """Derive source evidence independently, also from scanned PDF images."""
+    source_directory: Path, report: RunReport, transcript_path: Path,
+) -> tuple[list[InventoryEntry], list[str], list[tuple[str, Path]]]:
+    """Read original sources before generation; retain images for later review."""
     entries: list[InventoryEntry] = []
     uncertainties: list[str] = []
+    source_visuals: list[tuple[str, Path]] = []
     sources = [item for item in job.inputs if
                item.role == InputRole.RECREATE or
                (item.role in (InputRole.CONTENT, InputRole.STATEMENT)
                 and item.policy in (ContentPolicy.VERBATIM, ContentPolicy.IMMUTABLE))]
     if not sources:
-        return [], ['Kein verbindlicher Reproduktionsinput konfiguriert.'], previous
-    with tempfile.TemporaryDirectory(prefix='context-agent-source-') as temp:
-        for number, item in enumerate(sources, 1):
-            suffix = item.path.suffix.lower()
-            if suffix == '.pdf':
-                pages = render_pages(item.path, Path(temp) / f'source-{number}',
-                                     max_pages=job.config.review.max_pages, scale=2.0)
-                for offset in range(0, len(pages), job.config.review.pages_per_batch):
-                    _require_review_turn(report, job)
-                    batch = pages[offset:offset + job.config.review.pages_per_batch]
-                    previous = _call_review(
-                        session=session, previous_response_id=previous.response_id,
-                        pages=batch, report=report, transcript_path=transcript_path,
-                        phase='inventory-source',
-                        prompt=source_prompt(item, scope=scope, start=offset + 1,
-                                             end=offset + len(batch)),
-                    )
-                    collected, unresolved = parse_inventory(
-                        previous.output_text, source=item.relative_path,
-                        start=offset + 1, end=offset + len(batch),
-                        id_prefix=f's{number}p{offset + 1}',
-                    )
-                    entries.extend(collected)
-                    uncertainties.extend(unresolved)
-            elif suffix in ('.png', '.jpg', '.jpeg', '.webp'):
+        return [], ['Kein verbindlicher Reproduktionsinput konfiguriert.'], []
+    for number, item in enumerate(sources, 1):
+        suffix = item.path.suffix.lower()
+        if suffix == '.pdf':
+            pages = render_pages(item.path, source_directory / f'source-{number}',
+                                 max_pages=job.config.review.max_pages, scale=2.0)
+            source_visuals.extend((f'{item.relative_path}, Originalseite {i}', page)
+                                  for i, page in enumerate(pages, 1))
+            for offset in range(0, len(pages), job.config.review.pages_per_batch):
                 _require_review_turn(report, job)
-                previous = _call_review(
-                    session=session, previous_response_id=previous.response_id,
-                    pages=(item.path,), report=report, transcript_path=transcript_path,
+                batch = pages[offset:offset + job.config.review.pages_per_batch]
+                checked = _call_review(
+                    session=session, previous_response_id=None,
+                    pages=batch, report=report, transcript_path=transcript_path,
                     phase='inventory-source',
-                    prompt=source_prompt(item, scope=scope, start=1, end=1),
+                    prompt=source_prompt(item, scope=scope, start=offset + 1,
+                                         end=offset + len(batch)),
                 )
                 collected, unresolved = parse_inventory(
-                    previous.output_text, source=item.relative_path, start=1, end=1,
-                    id_prefix=f's{number}p1',
+                    checked.output_text, source=item.relative_path,
+                    start=offset + 1, end=offset + len(batch),
+                    id_prefix=f's{number}p{offset + 1}',
                 )
                 entries.extend(collected)
                 uncertainties.extend(unresolved)
-            else:
-                try:
-                    text = item.path.read_text(encoding='utf-8')
-                except (UnicodeError, OSError):
-                    uncertainties.append(f'Quelle {item.relative_path} nicht lesbar')
-                    continue
-                _require_review_turn(report, job)
-                previous = _call_review_text(
-                    session=session, previous_response_id=previous.response_id,
-                    report=report, transcript_path=transcript_path,
-                    phase='inventory-source',
-                    prompt=source_prompt(item, scope=scope, start=1, end=1, text=text),
-                )
-                collected, unresolved = parse_inventory(
-                    previous.output_text, source=item.relative_path, start=1, end=1,
-                    id_prefix=f's{number}p1',
-                )
-                entries.extend(collected)
-                uncertainties.extend(unresolved)
-    return entries, uncertainties, previous
+        elif suffix in ('.png', '.jpg', '.jpeg', '.webp'):
+            _require_review_turn(report, job)
+            source_visuals.append((f'{item.relative_path}, Originalbild', item.path))
+            checked = _call_review(
+                session=session, previous_response_id=None,
+                pages=(item.path,), report=report, transcript_path=transcript_path,
+                phase='inventory-source',
+                prompt=source_prompt(item, scope=scope, start=1, end=1),
+            )
+            collected, unresolved = parse_inventory(
+                checked.output_text, source=item.relative_path, start=1, end=1,
+                id_prefix=f's{number}p1',
+            )
+            entries.extend(collected)
+            uncertainties.extend(unresolved)
+        else:
+            try:
+                text = item.path.read_text(encoding='utf-8')
+            except (UnicodeError, OSError):
+                uncertainties.append(f'Quelle {item.relative_path} nicht lesbar')
+                continue
+            _require_review_turn(report, job)
+            checked = _call_review_text(
+                session=session, previous_response_id=None,
+                report=report, transcript_path=transcript_path,
+                phase='inventory-source',
+                prompt=source_prompt(item, scope=scope, start=1, end=1, text=text),
+            )
+            collected, unresolved = parse_inventory(
+                checked.output_text, source=item.relative_path, start=1, end=1,
+                id_prefix=f's{number}p1',
+            )
+            entries.extend(collected)
+            uncertainties.extend(unresolved)
+    return entries, uncertainties, source_visuals
 
 
 def _sync_state(session: AgentSession, result_dir: Path) -> ArtifactState:

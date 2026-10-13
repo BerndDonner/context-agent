@@ -183,11 +183,13 @@ def test_hosted_review_sends_images_but_disallows_shell(tmp_path: Path, job_fact
     image = tmp_path / 'page.jpg'
     image.write_bytes(b'fake-jpeg')
     session._upload = lambda path: UploadedFile(path, 'file-page-1')  # type: ignore[method-assign]
-    result = session.review_pages('pure review', 'previous-1', (image,))
+    result = session.review_pages('pure review', None, (image,))
     assert result.response_id == 'response-1'
     request = session._client.responses.calls[0]
     assert request['tool_choice'] == 'none'
-    assert request['previous_response_id'] == 'previous-1'
+    assert 'previous_response_id' not in request
+    assert 'tools' not in request
+    assert request['instructions'] != 'system'
     assert request['input'][0]['content'][1] == {
         'type': 'input_image', 'file_id': 'file-page-1', 'detail': 'high',
     }
@@ -217,7 +219,7 @@ def test_reasoning_and_flex_applied_to_initial_followup_and_review(tmp_path: Pat
     second = session.run_followup("repair", first.response_id)
     page = tmp_path / "page.png"
     page.write_bytes(b"mock")
-    session.review_pages("review", second.response_id, (page,))
+    session.review_pages("review", None, (page,))
     assert len(session._client.responses.calls) == 3
     for request in session._client.responses.calls:
         assert request["model"] == "gpt-6.1-sol"
@@ -266,8 +268,62 @@ def test_content_only_review_has_no_shell_access(tmp_path: Path, job_factory) ->
     session.container_id = 'container-1'
     session._uploaded = []
     session._client = FakeClient()
-    session.review_text('check contents', 'previous-1')
+    session.review_text('check contents', None)
     call = session._client.responses.calls[0]
     assert call['tool_choice'] == 'none'
-    assert call['previous_response_id'] == 'previous-1'
+    assert 'previous_response_id' not in call
+    assert 'tools' not in call
     assert call['input'][0]['content'] == [{'type': 'input_text', 'text': 'check contents'}]
+
+
+def test_review_does_not_inherit_generator_context_or_files(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job = load_job(job_factory(tmp_path))
+    direct = job.root / 'input' / 'image.png'
+    direct.write_bytes(b'image')
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.direct_files = (direct,)
+    session.system_prompt = 'generation instructions'
+    session.container_id = 'container-1'
+    session._uploaded = [UploadedFile(direct, 'file-direct')]
+    session._client = FakeClient()
+    session._upload = lambda path: UploadedFile(path, 'file-original-or-result')  # type: ignore[method-assign]
+    generated = session.run_initial('write document')
+    session.review_text('inventory', None)
+    original = tmp_path / 'original.jpg'
+    produced = tmp_path / 'produced.jpg'
+    original.write_bytes(b'orig')
+    produced.write_bytes(b'generated')
+    session.review_pages('compare', None, (original, produced))
+    repair = session.run_followup('fix drawing', generated.response_id)
+    assert repair.response_id == 'response-4'
+    gen, inventory, visual, repair_call = session._client.responses.calls
+    assert 'previous_response_id' not in inventory
+    assert 'previous_response_id' not in visual
+    assert 'tools' not in inventory and 'tools' not in visual
+    assert inventory['instructions'] != gen['instructions']
+    assert visual['instructions'] != gen['instructions']
+    assert len(inventory['input'][0]['content']) == 1
+    assert [x['file_id'] for x in visual['input'][0]['content'][1:]] == [
+        'file-original-or-result', 'file-original-or-result',
+    ]
+    assert repair_call['previous_response_id'] == generated.response_id
+    assert repair_call['instructions'] == gen['instructions']
+
+
+def test_reused_original_upload_is_not_repeated(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job = load_job(job_factory(tmp_path))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.direct_files = ()
+    session.system_prompt = 'generation'
+    session.container_id = 'container-1'
+    session._uploaded = []
+    session._client = FakeClient()
+    # Exercise the real _upload method with a fake OpenAI Files API.
+    session._client.files = SimpleNamespace(create=lambda **kw: SimpleNamespace(id='source-upload'))
+    source = tmp_path / 'source.jpg'
+    source.write_bytes(b'source bytes')
+    session.review_pages('first', None, (source,))
+    session.review_pages('second', None, (source,))
+    assert len(session._uploaded) == 1

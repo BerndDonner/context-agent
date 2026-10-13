@@ -1,4 +1,4 @@
-# context-agent 0.4.0
+# context-agent 0.5.0
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -228,7 +228,11 @@ transcript.jsonl
 auch für andere Arten von Jobs (z. B. neue Übungsaufgaben erstellen) der bisherige
 Ablauf erhalten. Mit `review.reproduction: true` laufen drei getrennte Schritte:
 
-1. **Quelleninventar:** Der Agent prüft die maßgeblichen Eingaben (`role: recreate`
+1. **Quelleninventar VOR der Erzeugung:** Der schreibende Agent wird erst gestartet,
+   nachdem ein read-only Modellaufruf alle maßgeblichen Quellen inventarisiert hat.
+   Das Inventar wird als überprüfbare Checkliste an die Erzeugung übergeben.
+   Der prüfende Modellaufruf erhält dabei keinen vorherigen Erzeugungsverlauf.
+   Der Agent prüft die maßgeblichen Eingaben (`role: recreate`
    sowie verbindliche `content`-/`statement`-Quellen) anhand der tatsächlichen
    Quellseiten. Auch Scan-PDFs **ohne Textebene** werden seitenweise als Bilder
    bereitgestellt. Das Modell inventarisiert nur den in `task.md` beauftragten
@@ -244,8 +248,20 @@ Ablauf erhalten. Mit `review.reproduction: true` laufen drei getrennte Schritte:
    **keine** typografischen, sprachlichen oder fachlichen Verbesserungen vornehmen.
 
 Die Aufgabenbeschreibung und die Quellen-Policies gelten in allen Schritten.
-Jede reine Prüfung läuft ohne Shell-Zugriff. Nach Reparaturen werden Inhalt und
-Visualisierung erneut geprüft; das Quelleninventar bleibt dabei erhalten.
+**Strikte Trennung der Modellkontexte:** Jedes Inventar, jeder Inhaltsabgleich
+und jede visuelle Begutachtung wird als neuer Responses-Aufruf **ohne
+`previous_response_id`** ausgeführt, mit separaten Reviewer-Instruktionen und
+**ohne Shell-Tools**. Es werden ausschließlich die für diesen Check erforderlichen
+Original- beziehungsweise Ausgabeseiten und der konkrete Auftrag mitgegeben.
+Die visuelle Prüfung erhält die Originalseiten erneut (zuerst Originale, danach
+Ausgabeseiten). Für eine globale Fehlstellenprüfung werden alle Ausgabeseiten
+in einem neuen Aufruf vorgelegt. Frühere Review-Antworten gelten nicht als Beweis.
+
+Reparaturen bleiben dagegen mit `previous_response_id` im **Erzeugungsverlauf**;
+nach jeder Reparatur laufen die unabhängigen Prüfungen erneut. Das einmal vor
+Beginn erstellte Quelleninventar bleibt dabei unverändert. Der Upload der
+Originalseiten wird innerhalb eines Runs wiederverwendet. Dies kann trotz
+Caching bei langen Scans erhebliche zusätzliche Bild-Tokenkosten verursachen.
 
 Das Ergebnis `result/report.json` unterscheidet:
 

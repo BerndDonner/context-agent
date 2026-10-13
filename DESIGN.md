@@ -109,20 +109,31 @@ Der Agent in der Sandbox:
 
 ---
 
-### 3.4 Reproduktionsaudit und konservative Abnahme (0.4)
+### 3.4 Reproduktionsaudit und konservative Abnahme (0.5)
 
 Reproduktionsjobs (`review.reproduction: true`) nutzen zwei **unabhängige**
 Modellprüfungen auf Basis des konkreten Auftrags:
 
-- Ein Quelleninventar wird einmal aus den verbindlichen Originaleingaben erstellt.
+- VOR dem Erzeugungsaufruf wird einmal ein Quelleninventar aus den verbindlichen
+  Originaleingaben erstellt. Die Erzeugung bekommt das Inventar als Checkliste.
+  Die Quelle wird nicht erst aus der fertigen Ausgabe erschlossen.
   Original-PDFs werden dafür unabhängig von einer vorhandenen Textebene als
   Bilder gerendert; Quellenabschnitte, die `task.md` ausdrücklich ausnimmt,
   dürfen nicht als fehlend bemängelt werden.
 - Die erzeugten Seiten werden gegen dieses Inventar verglichen. Fehlende
   Zuordnungen werden nach Sichtung aller Ausgabeseiten nochmals geprüft.
-- Unabhängig davon wird die visuelle Reproduktion geprüft. Sichere Fehler
+- Unabhängig davon wird die visuelle Reproduktion geprüft. Jeder visuelle
+  Prüfaufruf erhält die ORIGINAL-Bildseiten erneut vor seinen Ausgabeseiten,
+  da er den vorherigen Aufruf nicht kennen kann. Sichere Fehler
   durchlaufen denselben automatischen Reparaturmechanismus; Zweifelsfälle
   werden nicht in echte Fehler umgedeutet.
+
+Echte Modellkontext-Isolation: Kein Inhalts-, Inventar- oder Sichtprüfaufruf
+setzt `previous_response_id`; alle bekommen andere Systemanweisungen als der
+Erzeugungsagent, und es werden keinerlei Shell-Tools angeboten. Prüfungsergebnisse
+überschreiben nicht den Response-Zeiger des Erzeugers. Nur der schreibende
+Reparaturaufruf setzt die Erzeugungskonversation fort. Nicht zugeordnete Inhalte
+werden mit den gesamten Ausgabeseiten in einem neuen reinen Lesekontext überprüft.
 
 `report.status` kennt `success`, `needs_review` und `failed`. Auch bei nur einer
 offenen Unsicherheit gilt **kein voller Erfolg** und keine Übernahme in die
@@ -911,9 +922,10 @@ Der Kopf kommt weiterhin aus dem ConTeXt-Template, sofern `task.md` nichts ander
 fordert. Gescanntes Material ohne Textebene muss visuell verglichen werden.
 Seitenumbrüche, Leerraum und zweifelhafte Original-Typografie sind keine Fehler.
 
-Bei mehreren Batches dürfen frühere Review-Batches noch keine Aussagen über fehlende
-Abschnitte des gesamten Ausgabedokuments treffen; die globale Vollständigkeitsprüfung
-findet erst im letzten Batch statt, mit Bezug auf die vorher gezeigten Seiten. Kann
+Die visuelle Prüfung ist pro Ausgabeseiten-Batch isoliert und darf grundsätzlich
+keine globale Fehlstellenbehauptung ableiten. Der separate Inhaltstest sieht alle
+Ausgabeseiten in Batches. Noch offene Punkte werden in einem frischen Modellkontext
+unter Mitgabe ALLER Ausgabeseiten erneut überprüft. Kann
 das Modell die Vollständigkeit nicht sicher verifizieren, protokolliert es
 `review_uncertainties`, statt automatisch eine Reparatur zu veranlassen.
 
