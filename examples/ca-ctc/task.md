@@ -2,8 +2,7 @@ Reproduce only the CTC-mode teaching content from the provided PDF as a new, com
 
 Scope of reproduction:
 - Reproduce section "14.7.2 Clear Timer on Compare Match (CTC) Mode".
-- Reproduce the explanatory paragraphs of that section.
-- Reproduce the figure caption "Figure 14-5. CTC Mode, Timing Diagram".
+- Reproduce all text, equations, and figures belonging to section 14.7.2, from its heading to the end of the source page, without omissions or modifications.- Reproduce the figure caption "Figure 14-5. CTC Mode, Timing Diagram".
 - Reproduce the timing diagram itself accurately.
 - Reproduce the equation block for f_OCnx and the short explanatory text below it.
 
@@ -22,7 +21,7 @@ Priorities:
 5. Keep the layout simple and clean. Exact page breaks are not required.
 
 Important technical details that must stay correct:
-- Use the Timer0 names from the source page: OCR0A, TCNT0, OCF0A, OC0A, COM0A1:0, f_OC0.
+- Preserve the generic timer notation in the original timing diagram and equation. Do not replace it with Timer0-specific identifiers.
 - Do not accidentally substitute Timer2 names such as OCR2 or TCNT2.
 - Keep the equation semantics and symbols intact.
 
