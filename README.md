@@ -162,10 +162,22 @@ transcript.jsonl
 Modell übergeben und gegen die ursprünglichen Eingaben geprüft. Pro Modellaufruf werden
 `pages_per_batch` Seiten betrachtet. Der Reviewer **kann keine Shell-Befehle ausführen**.
 Nur konkret nachweisbare Abweichungen mit hoher Sicherheit werden repariert; Zweifel
-landen separat in `report.json` unter `review_uncertainties`. Gedruckte Lösungen und
-sonstige möglicherweise fachlich fragwürdige Details der Quelle bleiben erhalten.
-Seitenumbrüche, Leerraum und Typografie werden nicht optimiert. Eine automatische
-Prüfung kann jedoch keine 100-prozentige Korrektheit garantieren.
+landen separat in `report.json` unter `review_uncertainties`. **Maßgeblich ist dabei
+`task.md`**: Sie kann die gesamte Quelle oder ausdrücklich nur einzelne Kapitel,
+Seiten bzw. Aufgaben zur Reproduktion auswählen. Ausgelassene Quellteile sind keine
+Fehler; `policy: verbatim` verlangt Worttreue **innerhalb des gewählten Umfangs**.
+Dort vorhandene Lösungen und fachlich fragwürdige Originalstellen bleiben erhalten.
+Das gilt auch für eingescannte PDFs ohne Textebene. Referenzdokumente müssen nur
+dann reproduziert werden, wenn der Auftrag das verlangt. Der Kopf folgt dem Template,
+sofern `task.md` nichts anderes festlegt. Seitenumbrüche, Leerraum und Typografie
+werden nicht optimiert. Eine automatische Prüfung kann jedoch keine 100-prozentige
+Korrektheit garantieren.
+
+Bei mehrseitigen Ausgaben prüft der Reviewer zunächst lokale Wiedergabefehler pro
+Bildblock. Erst beim letzten Block beurteilt er zusätzliche Auslassungen im gesamten
+beauftragten Inhalt anhand des bisherigen Review-Kontextes; nicht sicher überprüfbare
+Stellen werden als Unsicherheit erfasst. Die Aufgabenbeschreibung wird in **jedem**
+Review-Aufruf und jeder darauf folgenden Reparaturanweisung explizit mitgegeben.
 
 `max_agent_turns` zählt **auch die reinen Review-Aufrufe**. Bei 11 Seiten und vier
 Seiten pro Review-Aufruf werden drei Modellaufrufe pro Prüfdurchgang benötigt;

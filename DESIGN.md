@@ -872,11 +872,23 @@ bewusst neue Inhalte erstellen. Der lokale Renderer PyMuPDF erzeugt JPEGs aus al
 PDF-Ausgabeseiten. Jede Gruppe von `review.pages_per_batch` Seiten wird vom Modell
 in einem reinen Leseaufruf verglichen: `tool_choice=none` verbietet Shell-Änderungen.
 
-Die Prüfung sucht **nur** eindeutige Reproduktionsfehler gegenüber den Eingaben:
-fehlende oder veränderte Angaben, Zahlen, Formeln, Lösungen und Diagramme oder
-objektiv unleserliche beziehungsweise abgeschnittene Elemente. Der Kopf kommt
-weiterhin aus dem ConTeXt-Template. Seitenumbrüche, Leerraum und zweifelhafte
-Original-Typografie sind keine Fehler.
+Die Prüfung sucht **nur** eindeutige Reproduktionsfehler gegenüber dem in `task.md`
+gewählten Teil der Eingaben: fehlende oder veränderte Angaben, Zahlen, Formeln,
+Lösungen und Diagramme oder objektiv unleserliche beziehungsweise abgeschnittene
+Elemente. Die tatsächliche Aufgabenbeschreibung und alle Eingaberollen/-Policies
+werden bei jedem Review und bei jeder Reproduktionsreparatur erneut übermittelt.
+Eine `verbatim`-Policy gilt für die beauftragte Auswahl, nicht zwingend für das ganze
+Quell-PDF. Ausdrücklich ausgeschlossene Quellbestandteile dürfen nicht in eine
+Reparatur hineingeraten. Ohne Ausnahme bleiben auch vorgedruckte Lösungen erhalten.
+Der Kopf kommt weiterhin aus dem ConTeXt-Template, sofern `task.md` nichts anderes
+fordert. Gescanntes Material ohne Textebene muss visuell verglichen werden.
+Seitenumbrüche, Leerraum und zweifelhafte Original-Typografie sind keine Fehler.
+
+Bei mehreren Batches dürfen frühere Review-Batches noch keine Aussagen über fehlende
+Abschnitte des gesamten Ausgabedokuments treffen; die globale Vollständigkeitsprüfung
+findet erst im letzten Batch statt, mit Bezug auf die vorher gezeigten Seiten. Kann
+das Modell die Vollständigkeit nicht sicher verifizieren, protokolliert es
+`review_uncertainties`, statt automatisch eine Reparatur zu veranlassen.
 
 Die Review-Antwort ist ein JSON-Bericht. Reparaturen gibt es nur bei Befunden
 mit `confidence >= 0.85`. Unsicherheiten werden protokolliert, nicht automatisch
@@ -891,7 +903,9 @@ Jede Modellrunde, einschließlich reiner Sichtprüfung, zählt zu
 Abbruch wegen Seitenlimit, Modellbudget oder Review-Fehler bedeutet einen
 fehlgeschlagenen Lauf, niemals stillschweigende Annahme eines perfekten Ergebnisses.
 
-Ein echter kostenpflichtiger Hosted-Shell-API-End-to-End-Lauf ist ausstehend.
-Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die Orchestratorlogik;
+Ein minimaler Hosted-Shell-API-End-to-End-Lauf mit `examples/minimal-job`
+war erfolgreich; für die **neue auftragsbezogene Reproduktionsprüfung** steht der
+Live-Test noch aus. Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die
+Orchestratorlogik;
 die `plotmod-api.md`-Beispiele wurden unabhängig mit dem gelieferten ConTeXt-LMTX
 real kompiliert.

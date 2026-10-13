@@ -26,7 +26,9 @@ from context_agent.prompts import (
     render_missing_artifacts_prompt,
 )
 from context_agent.report import append_transcript, write_report
-from context_agent.reproduction import parse_review, render_pages, review_prompt
+from context_agent.reproduction import (
+    parse_review, render_pages, repair_prompt, reproduction_scope, review_prompt,
+)
 
 SessionFactory = Callable[[ResolvedJob, Path, tuple[Path, ...], str], AgentSession]
 
@@ -158,6 +160,7 @@ def run_job(
 
                 report.review_findings = []
                 if job.config.review.reproduction:
+                    scope = reproduction_scope(job)
                     review_findings: list[NogoFinding] = []
                     with tempfile.TemporaryDirectory(prefix="context-agent-review-") as temporary:
                         assert state.main_pdf is not None
@@ -169,15 +172,17 @@ def run_job(
                                 raise ContextAgentError(
                                     "Not enough max_agent_turns to complete reproduction review")
                             batch = pages[offset:offset + batch_size]
+                            is_last = offset + len(batch) == len(pages)
                             prompt = review_prompt(len(pages), offset + 1, offset + len(batch),
-                                                   last=offset + len(batch) == len(pages))
+                                                   last=is_last, scope=scope)
                             # A review turn cannot execute shell commands or edit files.
                             turn = _call_review(session=session, prompt=prompt,
                                                 previous_response_id=turn.response_id,
                                                 pages=batch, report=report,
                                                 transcript_path=transcript_path)
-                            review = parse_review(turn.output_text, start_page=offset + 1,
-                                                  end_page=offset + len(batch))
+                            review = parse_review(turn.output_text,
+                                                  start_page=1 if is_last else offset + 1,
+                                                  end_page=len(pages) if is_last else offset + len(batch))
                             review_findings.extend(review.findings)
                             report.review_uncertainties.extend(review.uncertainties)
                     report.review_findings = review_findings
@@ -186,11 +191,7 @@ def run_job(
                             break
                         review_repairs += 1
                         report.review_repairs = review_repairs
-                        prompt = findings_as_prompt(review_findings) + (
-                            "\nBewahre ALLE Originalinhalte einschließlich gedruckter Lösungen. "
-                            "Keine Verbesserungen. Erzeuge nach Kompilierung erneut "
-                            "include-snapshot.tar.gz mit collect-includes.sh."
-                        )
+                        prompt = repair_prompt(review_findings, scope=scope)
                         turn = _call_turn(
                             session=session, prompt=prompt,
                             previous_response_id=turn.response_id,

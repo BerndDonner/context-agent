@@ -265,3 +265,80 @@ def test_remote_includes_not_applied_when_review_fails(
                      FailedIncludeSession(job, always_fail=True))
     assert report.status == 'failed'
     assert (job_root / 'include/plotmod.lua').read_text() == 'original'
+
+
+def test_reproduction_review_and_repair_obey_requested_scope(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path, max_turns=8)
+    (job_root / 'task.md').write_text(
+        'Reproduce chapter B including printed solutions. Omit chapter A explicitly.',
+        encoding='utf-8',
+    )
+    with (job_root / 'job.yaml').open('a') as stream:
+        stream.write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+    prompts: list[str] = []
+
+    class ScopeSession(ReviewSession):
+        def review_pages(self, prompt: str, previous_response_id: str,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            prompts.append(prompt)
+            assert 'Omit chapter A explicitly' in prompt
+            assert 'Reproduce chapter B including printed solutions' in prompt
+            return super().review_pages(prompt, previous_response_id, pages)
+
+        def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
+            assert 'Omit chapter A explicitly' in prompt
+            assert 'Füge keine ausdrücklich ausgeschlossenen Quellbestandteile hinzu' in prompt
+            assert 'Bewahre ALLE Originalinhalte' not in prompt
+            return super().run_followup(prompt, previous_response_id)
+
+    report = run_job(job_root, session_factory=lambda job, bundle, direct, system:
+                     ScopeSession(job))
+    assert report.status == 'success', report.errors
+    assert report.review_repairs == 1
+    assert len(prompts) == 2
+
+
+def test_multibatch_review_defers_global_omission_check(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    """Multi-page scans must not prompt a false omission before all pages are seen."""
+    job_root = job_factory(tmp_path, max_turns=8)
+    (job_root / 'task.md').write_text('Reproduce all tasks and solutions from scan.')
+    with (job_root / 'job.yaml').open('a') as stream:
+        stream.write('\nreview:\n  reproduction: true\n  pages_per_batch: 2\n  max_repairs: 0\n')
+    review_prompts: list[str] = []
+
+    class MultiPageSession(FakeSession):
+        def _write_pdf_and_log(self) -> None:
+            import fitz
+            doc = fitz.open()
+            for index in range(5):
+                doc.new_page().insert_text((70, 70), f'Exercise {index + 1}')
+            doc.save(self.remote / 'main.pdf')
+            doc.close()
+            (self.remote / 'context.log').write_text('ok')
+            make_snapshot(self.job.include_dir, self.remote / 'include-snapshot.tar.gz')
+
+        def review_pages(self, prompt: str, previous_response_id: str,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            review_prompts.append(prompt)
+            assert len(pages) <= 2
+            if len(review_prompts) == 3:
+                # Global completeness on the last batch can refer to an
+                # output page shown during an earlier batch.
+                return self._turn('v3', '{"findings":[{"type":"content",'
+                                  '"output_page":1,"source_page":4,"message":"missing",'
+                                  '"confidence":0.99}],"uncertainties":[]}')
+            return self._turn(f'v{len(review_prompts)}',
+                              '{"findings":[],"uncertainties":[]}')
+
+    report = run_job(job_root, session_factory=lambda job, bundle, direct, system:
+                     MultiPageSession(job))
+    assert report.status == 'failed'  # Reproduction repair deliberately disabled
+    assert report.review_findings
+    assert 'PDF-Seite 1' in report.review_findings[0].message
+    assert len(review_prompts) == 3
+    assert all('späteren Ausgabeseiten' in prompt for prompt in review_prompts[:2])
+    assert 'GESAMTEN beauftragten Inhalts' in review_prompts[2]

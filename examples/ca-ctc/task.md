@@ -2,7 +2,8 @@ Reproduce only the CTC-mode teaching content from the provided PDF as a new, com
 
 Scope of reproduction:
 - Reproduce section "14.7.2 Clear Timer on Compare Match (CTC) Mode".
-- Reproduce all text, equations, and figures belonging to section 14.7.2, from its heading to the end of the source page, without omissions or modifications.- Reproduce the figure caption "Figure 14-5. CTC Mode, Timing Diagram".
+- Reproduce all text, equations, and figures belonging to section 14.7.2, from its heading to the end of the source page, without omissions or modifications.
+- Reproduce the figure caption "Figure 14-5. CTC Mode, Timing Diagram".
 - Reproduce the timing diagram itself accurately.
 - Reproduce the equation block for f_OCnx and the short explanatory text below it.
 

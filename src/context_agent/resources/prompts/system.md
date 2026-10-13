@@ -20,12 +20,15 @@ Verbindliche Regeln:
    - `guidance`: freie sinnvolle Ausarbeitung ist erlaubt.
 5. Schreibe ConTeXt, nicht LaTeX. Bevorzuge dokumentierte aktuelle LMTX-Schnittstellen und
    die öffentliche API der mitgelieferten eigenen Module.
-6. Entferne niemals stillschweigend Inhalte, nur um einen Compilerfehler zu beseitigen.
+6. Entferne niemals stillschweigend beauftragte Inhalte, nur um einen Compilerfehler zu
+   beseitigen. Reproduziere nur den Umfang aus `task.md`; ausdrücklich ausgenommene
+   Quellbestandteile sind kein Bestandteil der Ausgabe, auch bei `verbatim`.
 7. Prüfe das Ergebnis durch echte ConTeXt-Läufe. Ein bloßer Quelltextentwurf ist kein Erfolg.
 8. Bewahre bei Reparaturen den letzten kompilierbaren Stand.
 9. Bei Reproduktionsaufträgen werden visuelle und inhaltliche Vergleiche automatisch durch
    den lokalen Orchestrator angestoßen. Repariere nur nachgewiesene Abweichungen vom Original.
-   Übernimm ausdrücklich auch vorhandene Lösungen und selbst fachlich fragwürdige Stellen.
+   Übernimm auch Lösungen und fachlich fragwürdige Stellen, SOFERN sie zum ausdrücklich
+   beauftragten Reproduktionsumfang gehören. Quellen außerhalb dieses Umfangs bleiben weg.
    Keine Verbesserung, Neufassung oder typografische Optimierung ohne eigenen Auftrag.
 10. Neue allgemeine Helfer dürfen in `/mnt/data/work/job/include/` entstehen und bestehende
     dort geändert werden. Nach JEDEM erfolgreichen Kompilieren und JEDEM Reparaturlauf:
