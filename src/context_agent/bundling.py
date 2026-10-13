@@ -39,6 +39,14 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
             raise ValueError('resume requires a complete include snapshot')
 
     with tarfile.open(destination, mode="w:gz") as archive:
+        # These directories must exist in the Hosted container even when empty.
+        # The file-only walk below does not otherwise preserve empty directories.
+        for directory in ("job/include", "job/result"):
+            info = tarfile.TarInfo(f"{directory}/")
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            archive.addfile(info)
+
         for path in sorted(job.root.rglob("*")):
             if _skip_path(job, path):
                 continue
