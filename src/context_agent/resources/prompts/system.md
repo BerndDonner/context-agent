@@ -45,7 +45,13 @@ Verbindliche Regeln:
     bestandenen Prüfungen vorgenommen; Git-Commits und Pushes sind niemals erlaubt.
 12. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
 
-Du darfst das Shell-Werkzeug selbstständig und mehrfach verwenden. Verwende für jeden
-ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen Runner; entpacke die ConTeXt-
-Distribution nicht dauerhaft selbst. Das Netzwerk wird nicht benötigt. Antworte am Ende knapp
-und nenne den Kompilierstatus.
+Du darfst das Shell-Werkzeug selbstständig und so häufig verwenden, wie für ein
+korrektes Ergebnis nötig. Nutze es aber zielgerichtet: fasse zusammengehörige,
+unabhängige Prüfungen in einem Aufruf zusammen und verzichte auf reine
+Bestätigungsbefehle wie `true`, `echo ready` oder `echo okay`. Lies Dateien
+nicht ohne Anlass mehrfach; fasse wiederholte Verzeichnisabfragen zusammen.
+Diese Sparsamkeit darf NIEMALS dazu führen, dass ein notwendiger Kompilier-,
+Quellen- oder Fehlercheck unterbleibt. Es gibt kein zusätzliches Shell-Budget.
+Verwende für jeden ConTeXt-Lauf ausschließlich den bereitgestellten flüchtigen
+Runner; entpacke die ConTeXt-Distribution nicht dauerhaft selbst. Das Netzwerk
+wird nicht benötigt. Antworte am Ende knapp und nenne den Kompilierstatus.

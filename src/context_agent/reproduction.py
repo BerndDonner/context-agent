@@ -17,7 +17,8 @@ class ReviewResult:
     uncertainties: list[str]
 
 
-def render_pages(pdf: Path, output_dir: Path, *, max_pages: int) -> tuple[Path, ...]:
+def render_pages(pdf: Path, output_dir: Path, *, max_pages: int,
+                 scale: float = 1.5) -> tuple[Path, ...]:
     try:
         import fitz
     except ImportError as exc:
@@ -29,7 +30,7 @@ def render_pages(pdf: Path, output_dir: Path, *, max_pages: int) -> tuple[Path, 
         output_dir.mkdir(parents=True, exist_ok=True)
         pages: list[Path] = []
         for number, page in enumerate(document, 1):
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
             path = output_dir / f'page-{number:03d}.jpg'
             path.write_bytes(pix.tobytes("jpeg", jpg_quality=80))
             pages.append(path)

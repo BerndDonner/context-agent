@@ -28,6 +28,8 @@ class AgentSession(Protocol):
 
     def review_pages(self, prompt: str, previous_response_id: str, pages: tuple[Path, ...]) -> AgentTurn: ...
 
+    def review_text(self, prompt: str, previous_response_id: str) -> AgentTurn: ...
+
     def close(self) -> None: ...
 
 
@@ -152,6 +154,7 @@ class OpenAIHostedSession:
     def _response(
         self, *, prompt: str, previous_response_id: str | None,
         review_pages: tuple[Path, ...] = (),
+        text_review: bool = False,
     ) -> AgentTurn:
         if self.container_id is None:
             raise RemoteAgentError("hosted container is not available")
@@ -181,7 +184,7 @@ class OpenAIHostedSession:
                     },
                 }
             ],
-            "tool_choice": "none" if review_pages else "auto",
+            "tool_choice": "none" if review_pages or text_review else "auto",
             "parallel_tool_calls": False,
             "max_output_tokens": self.job.config.limits.max_output_tokens,
             "store": True,
@@ -231,6 +234,10 @@ class OpenAIHostedSession:
             raise ValueError('review requires page images')
         return self._response(prompt=prompt, previous_response_id=previous_response_id,
                               review_pages=pages)
+
+    def review_text(self, prompt: str, previous_response_id: str) -> AgentTurn:
+        return self._response(prompt=prompt, previous_response_id=previous_response_id,
+                              text_review=True)
 
     def sync_result(self, destination: Path) -> dict[str, Path]:
         if self.container_id is None:

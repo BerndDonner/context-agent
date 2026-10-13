@@ -24,7 +24,7 @@ runtime:
   keep_remote: false
 
 limits:
-  max_agent_turns: 10
+  max_agent_turns: 18
   max_nogo_repairs: 3
   timeout_seconds: 900
   max_output_tokens: 12000

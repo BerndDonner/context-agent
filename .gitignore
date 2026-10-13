@@ -10,7 +10,7 @@ __pycache__/
 #wegen Donner auf NixOS
 .nix-python
 
-result/
+examples/*/result/
 
 # venv
 .venv/

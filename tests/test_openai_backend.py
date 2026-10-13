@@ -255,3 +255,19 @@ def test_standard_tier_is_explicit(tmp_path: Path, job_factory) -> None:  # type
     session._client = FakeClient()
     session.run_initial("test")
     assert session._client.responses.calls[0]["service_tier"] == "default"
+
+
+def test_content_only_review_has_no_shell_access(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job = load_job(job_factory(tmp_path))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.direct_files = ()
+    session.system_prompt = 'system'
+    session.container_id = 'container-1'
+    session._uploaded = []
+    session._client = FakeClient()
+    session.review_text('check contents', 'previous-1')
+    call = session._client.responses.calls[0]
+    assert call['tool_choice'] == 'none'
+    assert call['previous_response_id'] == 'previous-1'
+    assert call['input'][0]['content'] == [{'type': 'input_text', 'text': 'check contents'}]

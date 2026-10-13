@@ -1,4 +1,4 @@
-# context-agent 0.3.1
+# context-agent 0.4.0
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -11,7 +11,7 @@ No-go-Prüfung und sendet konkrete Befunde zur Reparatur an denselben Agenten zu
 
 Die verbindlichen Designentscheidungen stehen in [`DESIGN.md`](DESIGN.md).
 
-## Umfang von Version 0.3
+## Umfang von Version 0.4
 
 Enthalten sind:
 
@@ -24,8 +24,11 @@ Enthalten sind:
 - agentische Compiler-Reparaturen,
 - beliebig komplexe lokale Python-No-go-Checker,
 - automatische No-go-Reparaturrunden,
-- optional aktivierbare **visuelle und inhaltliche Reproduktionsprüfung** mit automatischer
-  Reparaturschleife (keine typografische oder fachliche Verbesserung),
+- optional aktivierbare **quellenbasierte Inhaltsinventarisierung und unabhängige
+  Vollständigkeitsprüfung** sowie getrennte visuelle Reproduktionsprüfung,
+  jeweils mit automatischer Reparaturschleife bei sicher belegten Fehlern,
+- `needs_review` statt uneingeschränktem Erfolg bei verbleibenden Unsicherheiten,
+- detaillierte Token-/Cache-/Shell-Metriken pro Runde und eine Prüf-Historie,
 - Git-kompatibler **Include-Roundtrip**: neue/geänderte Dateien in `include/` werden erst
   nach erfolgreicher Abnahme zurückgeschrieben, ohne Commit oder Push,
 - `main.tex`, `main.pdf`, `context.log`, `include-snapshot.tar.gz`,
@@ -121,7 +124,7 @@ runtime:
   keep_remote: false
 
 limits:
-  max_agent_turns: 16  # ausreichend für mehrere Bild-Batches und Reparaturen
+  max_agent_turns: 24  # bei längeren Scans Platz für Inventar + Inhalt + Sichtprüfung
   max_nogo_repairs: 3
   timeout_seconds: 900
   max_output_tokens: 12000
@@ -221,32 +224,56 @@ report.json
 transcript.jsonl
 ```
 
-`review.reproduction` ist standardmäßig **ausgeschaltet**. Für einen Reproduktionsjob
-`true` setzen. Jede Ausgabe-Seite wird mit PyMuPDF als JPEG gerendert, als Bild an das
-Modell übergeben und gegen die ursprünglichen Eingaben geprüft. Pro Modellaufruf werden
-`pages_per_batch` Seiten betrachtet. Der Reviewer **kann keine Shell-Befehle ausführen**.
-Nur konkret nachweisbare Abweichungen mit hoher Sicherheit werden repariert; Zweifel
-landen separat in `report.json` unter `review_uncertainties`. **Maßgeblich ist dabei
-`task.md`**: Sie kann die gesamte Quelle oder ausdrücklich nur einzelne Kapitel,
-Seiten bzw. Aufgaben zur Reproduktion auswählen. Ausgelassene Quellteile sind keine
-Fehler; `policy: verbatim` verlangt Worttreue **innerhalb des gewählten Umfangs**.
-Dort vorhandene Lösungen und fachlich fragwürdige Originalstellen bleiben erhalten.
-Das gilt auch für eingescannte PDFs ohne Textebene. Referenzdokumente müssen nur
-dann reproduziert werden, wenn der Auftrag das verlangt. Der Kopf folgt dem Template,
-sofern `task.md` nichts anderes festlegt. Seitenumbrüche, Leerraum und Typografie
-werden nicht optimiert. Eine automatische Prüfung kann jedoch keine 100-prozentige
-Korrektheit garantieren.
+`review.reproduction` ist standardmäßig **ausgeschaltet**. Ohne diese Option bleibt
+auch für andere Arten von Jobs (z. B. neue Übungsaufgaben erstellen) der bisherige
+Ablauf erhalten. Mit `review.reproduction: true` laufen drei getrennte Schritte:
 
-Bei mehrseitigen Ausgaben prüft der Reviewer zunächst lokale Wiedergabefehler pro
-Bildblock. Erst beim letzten Block beurteilt er zusätzliche Auslassungen im gesamten
-beauftragten Inhalt anhand des bisherigen Review-Kontextes; nicht sicher überprüfbare
-Stellen werden als Unsicherheit erfasst. Die Aufgabenbeschreibung wird in **jedem**
-Review-Aufruf und jeder darauf folgenden Reparaturanweisung explizit mitgegeben.
+1. **Quelleninventar:** Der Agent prüft die maßgeblichen Eingaben (`role: recreate`
+   sowie verbindliche `content`-/`statement`-Quellen) anhand der tatsächlichen
+   Quellseiten. Auch Scan-PDFs **ohne Textebene** werden seitenweise als Bilder
+   bereitgestellt. Das Modell inventarisiert nur den in `task.md` beauftragten
+   Inhalt: Aufgaben, Zahlen, Formeln, Diagramme, Beschriftungen und vorhandene
+   Lösungen. Bewusst ausgeschlossene Quellteile gehören nicht zum Inventar.
+2. **Unabhängiger Inhaltsabgleich:** Die gerenderten Ausgabeseiten werden
+   inventarbezogen überprüft. Sichere Abweichungen führen zu einer automatischen
+   Reparatur. Nicht zuordenbare Einträge werden nach Sichtung aller Seiten noch
+   einmal geprüft. Kann der Agent sie weder bestätigen noch sicher als fehlend
+   belegen, bleiben sie als Unsicherheit offen – **nicht als bestanden**.
+3. **Getrennte visuelle Prüfung:** Diese kontrolliert Wiedergabefehler wie
+   abgeschnittene Grafiken und überlappende Beschriftungen. Sie soll ausdrücklich
+   **keine** typografischen, sprachlichen oder fachlichen Verbesserungen vornehmen.
 
-`max_agent_turns` zählt **auch die reinen Review-Aufrufe**. Bei 11 Seiten und vier
-Seiten pro Review-Aufruf werden drei Modellaufrufe pro Prüfdurchgang benötigt;
-bei zwei Reparaturrunden sind mindestens zwölf Aufrufe sinnvoll. Ist das Budget
-erschöpft, gilt die Prüfung als fehlgeschlagen, nicht als bestanden.
+Die Aufgabenbeschreibung und die Quellen-Policies gelten in allen Schritten.
+Jede reine Prüfung läuft ohne Shell-Zugriff. Nach Reparaturen werden Inhalt und
+Visualisierung erneut geprüft; das Quelleninventar bleibt dabei erhalten.
+
+Das Ergebnis `result/report.json` unterscheidet:
+
+- `success`: keine bestätigten Fehler oder offenen Unsicherheiten; Include-Änderungen
+  dürfen übernommen werden.
+- `needs_review`: PDF wurde erstellt, aber mindestens eine Unsicherheit bleibt;
+  **kein** uneingeschränkter Erfolg, Exitcode 1, **keine** Include-Übernahme.
+- `failed`: Fehler, offene bestätigte Befunde oder nicht abgeschlossene Prüfung;
+  Exitcode 1, keine Include-Übernahme.
+
+Der Bericht enthält `source_inventory`, `content_findings`, `content_uncertainties`,
+`review_findings`, `review_uncertainties` und eine `review_history` aller
+Prüfdurchgänge. `usage_by_phase` weist Input-/Output-Tokens, Cache-Hits,
+Reasoning-Tokens sowie Shell-Aufrufe/-Befehle getrennt je Phase aus.
+
+**Kostenoptimierung ohne Qualitätsverlust:** Der Systemprompt fordert das
+Zusammenfassen zusammengehöriger Shell-Aktionen und vermeidet leere
+Statuskommandos. Es wird **kein neues verpflichtendes Token- oder Shell-Limit**
+eingeführt. Bestehende konfigurierbare Job-Grenzen gelten weiterhin, darunter
+`limits.max_agent_turns`. Da die unabhängige Inhaltsprüfung mehr Modellrunden
+benötigt, ist für mehrseitige Reproduktionen eine ausreichend hohe Einstellung
+(z. B. 24 statt 6 Runden) wichtig. Der zulässige Wertebereich wurde dafür
+auf 1–100 erweitert. Die Bilderstellung und Prüfungen verursachen zusätzliche
+API-Tokens, die sich nicht durch spätere Einsparungen garantiert ausgleichen.
+
+Die Prüfung ist ein **best-effort Modellvergleich, kein formaler Beweis** einer
+100-prozentigen Reproduktion. Besonders bei schlecht lesbaren Scans bleibt die
+abschließende menschliche Kontrolle wichtig.
 
 ### Include-Roundtrip und Git
 

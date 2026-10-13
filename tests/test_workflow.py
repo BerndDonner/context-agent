@@ -144,6 +144,13 @@ def check(context):
     assert "BAD" in (job_root / "result" / "main.tex").read_text()
 
 
+
+
+def configure_reproduction_source(job_root: Path) -> None:
+    """Upgrade the standard guidance input into a faithful reproduction source."""
+    yaml = job_root / 'job.yaml'
+    yaml.write_text(yaml.read_text().replace('policy: guidance', 'policy: verbatim'))
+
 class ReviewSession(FakeSession):
     """Visual review reports a missing printed solution, then accepts the repair."""
 
@@ -151,6 +158,14 @@ class ReviewSession(FakeSession):
         super().__init__(job)
         self.review_calls = 0
         self.always_fail = always_fail
+
+    def review_text(self, prompt: str, previous_response_id: str) -> AgentTurn:
+        if 'ERSTELLE NUR EIN INHALTSINVENTAR' in prompt:
+            return self._turn('inventory', '{"entries":[{"source_page":1,"kind":"text",'
+                              '"anchor":"Aufgabe 1","detail":"Lösung 42"}],"uncertainties":[]}')
+        if 'ABSCHLIESSENDE INHALTSKONTROLLE' in prompt:
+            return self._turn('missing', '{"missing":[],"uncertainties":[]}')
+        raise AssertionError(prompt)
 
     def _write_pdf_and_log(self) -> None:
         import fitz
@@ -165,6 +180,8 @@ class ReviewSession(FakeSession):
                      pages: tuple[Path, ...]) -> AgentTurn:
         assert 'Original' in prompt
         assert pages and pages[0].read_bytes().startswith(b'\xff\xd8')
+        if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+            return self._turn('content', '{"present":["s1p1-1"],"mismatches":[],"uncertainties":[]}')
         self.review_calls += 1
         if self.review_calls == 1 or self.always_fail:
             text = ('{"findings":[{"type":"content","output_page":1,'
@@ -185,6 +202,7 @@ def test_reproduction_review_repairs_and_commits_includes(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     job_root = job_factory(tmp_path, max_turns=8)
+    configure_reproduction_source(job_root)
     with (job_root / 'job.yaml').open('a') as f:
         f.write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
     captured: dict[str, ReviewSession] = {}
@@ -197,7 +215,7 @@ def test_reproduction_review_repairs_and_commits_includes(
     report = run_job(job_root, session_factory=factory)
     assert report.status == 'success', report.errors
     assert report.review_repairs == 1
-    assert report.agent_turns == 4
+    assert report.agent_turns == 7
     assert captured['session'].review_calls == 2
 
 
@@ -205,6 +223,7 @@ def test_reproduction_fail_does_not_change_includes(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     job_root = job_factory(tmp_path, max_turns=8)
+    configure_reproduction_source(job_root)
     (job_root / 'include/plotmod.lua').write_text('original')
     with (job_root / 'job.yaml').open('a') as f:
         f.write('\nreview:\n  reproduction: true\n  max_repairs: 1\n')
@@ -249,6 +268,7 @@ def test_remote_includes_not_applied_when_review_fails(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     job_root = job_factory(tmp_path, max_turns=6)
+    configure_reproduction_source(job_root)
     (job_root / 'include/plotmod.lua').write_text('original')
     with (job_root / 'job.yaml').open('a') as f:
         f.write('\nreview:\n  reproduction: true\n  max_repairs: 0\n')
@@ -271,6 +291,7 @@ def test_reproduction_review_and_repair_obey_requested_scope(
     tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     job_root = job_factory(tmp_path, max_turns=8)
+    configure_reproduction_source(job_root)
     (job_root / 'task.md').write_text(
         'Reproduce chapter B including printed solutions. Omit chapter A explicitly.',
         encoding='utf-8',
@@ -297,7 +318,7 @@ def test_reproduction_review_and_repair_obey_requested_scope(
                      ScopeSession(job))
     assert report.status == 'success', report.errors
     assert report.review_repairs == 1
-    assert len(prompts) == 2
+    assert len(prompts) == 4  # content and visual review, twice
 
 
 def test_multibatch_review_defers_global_omission_check(
@@ -305,12 +326,17 @@ def test_multibatch_review_defers_global_omission_check(
 ) -> None:  # type: ignore[no-untyped-def]
     """Multi-page scans must not prompt a false omission before all pages are seen."""
     job_root = job_factory(tmp_path, max_turns=8)
+    configure_reproduction_source(job_root)
     (job_root / 'task.md').write_text('Reproduce all tasks and solutions from scan.')
     with (job_root / 'job.yaml').open('a') as stream:
         stream.write('\nreview:\n  reproduction: true\n  pages_per_batch: 2\n  max_repairs: 0\n')
     review_prompts: list[str] = []
 
     class MultiPageSession(FakeSession):
+        def review_text(self, prompt: str, previous_response_id: str) -> AgentTurn:
+            return self._turn('source', '{"entries":[{"source_page":1,"kind":"text",'
+                              '"anchor":"Exercise 1","detail":"Exercise 1"}],"uncertainties":[]}')
+
         def _write_pdf_and_log(self) -> None:
             import fitz
             doc = fitz.open()
@@ -323,6 +349,8 @@ def test_multibatch_review_defers_global_omission_check(
 
         def review_pages(self, prompt: str, previous_response_id: str,
                          pages: tuple[Path, ...]) -> AgentTurn:
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                return self._turn('content', '{"present":["s1p1-1"],"mismatches":[],"uncertainties":[]}')
             review_prompts.append(prompt)
             assert len(pages) <= 2
             if len(review_prompts) == 3:
@@ -342,3 +370,132 @@ def test_multibatch_review_defers_global_omission_check(
     assert len(review_prompts) == 3
     assert all('späteren Ausgabeseiten' in prompt for prompt in review_prompts[:2])
     assert 'GESAMTEN beauftragten Inhalts' in review_prompts[2]
+
+
+def test_unresolved_source_uncertainty_blocks_success_and_include_sync(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path, max_turns=12)
+    configure_reproduction_source(job_root)
+    (job_root / 'include/plotmod.lua').write_text('original')
+    with (job_root / 'job.yaml').open('a') as stream:
+        stream.write('\nreview:\n  reproduction: true\n')
+
+    class UncertainSession(ReviewSession):
+        def review_text(self, prompt: str, previous_response_id: str) -> AgentTurn:
+            result = super().review_text(prompt, previous_response_id)
+            if 'ERSTELLE NUR EIN INHALTSINVENTAR' in prompt:
+                return self._turn('inventory',
+                                  '{"entries":[{"source_page":1,"kind":"text",'
+                                  '"anchor":"Aufgabe 1","detail":"Lösung 42"}],'
+                                  '"uncertainties":["Quelle teilweise unleserlich"]}')
+            return result
+
+        def review_pages(self, prompt: str, previous_response_id: str,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                return super().review_pages(prompt, previous_response_id, pages)
+            self.review_calls += 1
+            return self._turn('visual', '{"findings":[],"uncertainties":[]}')
+
+        def _write_pdf_and_log(self) -> None:
+            super()._write_pdf_and_log()
+            added = self.remote / 'sandbox-include'
+            added.mkdir(exist_ok=True)
+            (added / 'plotmod.lua').write_text('must not replace original')
+            make_snapshot(added, self.remote / 'include-snapshot.tar.gz')
+
+    report = run_job(job_root, session_factory=lambda job, bundle, direct, system:
+                     UncertainSession(job))
+    assert report.status == 'needs_review', report.errors
+    assert report.content_uncertainties == ['Quelle teilweise unleserlich']
+    assert not report.include_changes
+    assert (job_root / 'include/plotmod.lua').read_text() == 'original'
+    assert report.review_history
+
+
+def test_content_mismatch_triggers_repair_then_visual_audit(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    root = job_factory(tmp_path, max_turns=12)
+    configure_reproduction_source(root)
+    (root / 'job.yaml').open('a').write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+
+    class ContentRepairSession(ReviewSession):
+        def __init__(self, job):  # type: ignore[no-untyped-def]
+            super().__init__(job)
+            self.content_calls = 0
+
+        def review_pages(self, prompt: str, previous_response_id: str,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                self.content_calls += 1
+                if self.content_calls == 1:
+                    return self._turn('incorrect',
+                                      '{"present":[],"mismatches":[{"id":"s1p1-1",'
+                                      '"output_page":1,"message":"42 wurde zu 43",'
+                                      '"confidence":0.99}],"uncertainties":[]}')
+                return self._turn('correct',
+                                  '{"present":["s1p1-1"],"mismatches":[],"uncertainties":[]}')
+            self.review_calls += 1
+            return self._turn('visual-ok', '{"findings":[],"uncertainties":[]}')
+
+        def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
+            assert '42 wurde zu 43' in prompt
+            return super().run_followup(prompt, previous_response_id)
+
+    report = run_job(root, session_factory=lambda job, bundle, direct, system:
+                     ContentRepairSession(job))
+    assert report.status == 'success', report.errors
+    assert report.review_repairs == 1
+    assert report.content_findings == []
+    assert any(item['phase'] == 'content' and item['findings']
+               for item in report.review_history)
+    assert report.usage_by_phase[-1]['phase'] == 'review-reproduction'
+
+
+def test_scanned_pdf_is_inventoried_from_images_without_ocr(
+    tmp_path: Path, job_factory,
+) -> None:  # type: ignore[no-untyped-def]
+    import fitz
+
+    root = job_factory(tmp_path, max_turns=12)
+    # An image-only PDF simulates a scanned worksheet including printed solutions.
+    scan = root / 'input/scan.pdf'
+    document = fitz.open()
+    page = document.new_page()
+    pixel_map = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 80, 40), 0)
+    pixel_map.clear_with(255)
+    page.insert_image(fitz.Rect(40, 40, 120, 80), pixmap=pixel_map)
+    document.save(scan)
+    document.close()
+    config = root / 'job.yaml'
+    config.write_text(config.read_text().replace(
+        'input/notes.md\n    role: content\n    policy: guidance',
+        'input/scan.pdf\n    role: recreate\n    policy: verbatim',
+    ) + '\nreview:\n  reproduction: true\n')
+
+    class ScanSession(ReviewSession):
+        def review_pages(self, prompt: str, previous_response_id: str,
+                         pages: tuple[Path, ...]) -> AgentTurn:
+            if 'ERSTELLE NUR EIN INHALTSINVENTAR' in prompt:
+                assert pages[0].read_bytes().startswith(b'\xff\xd8')
+                assert 'input/scan.pdf' in prompt
+                return self._turn('source',
+                                  '{"entries":[{"source_page":1,"kind":"solution",'
+                                  '"anchor":"Aufgabe 1","detail":"Lösung: 42"}],'
+                                  '"uncertainties":[]}')
+            if 'UNABHÄNGIGE INHALTSKONTROLLE' in prompt:
+                return self._turn('present',
+                                  '{"present":["s1p1-1"],"mismatches":[],"uncertainties":[]}')
+            self.review_calls += 1
+            return self._turn('visual', '{"findings":[],"uncertainties":[]}')
+
+    report = run_job(root, session_factory=lambda job, bundle, direct, system:
+                     ScanSession(job))
+    assert report.status == 'success', report.errors
+    assert report.source_inventory[0]['kind'] == 'solution'
+    assert len(report.usage_by_phase) == 4
+    assert [phase['phase'] for phase in report.usage_by_phase] == [
+        'initial', 'inventory-source', 'review-content', 'review-reproduction',
+    ]

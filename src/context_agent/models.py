@@ -48,7 +48,7 @@ class RuntimeSpec(BaseModel):
 class LimitsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    max_agent_turns: int = Field(default=6, ge=1, le=20)
+    max_agent_turns: int = Field(default=12, ge=1, le=100)
     max_nogo_repairs: int = Field(default=3, ge=0, le=20)
     timeout_seconds: int = Field(default=900, ge=60, le=3600)
     max_output_tokens: int = Field(default=12000, ge=1000, le=100000)
@@ -216,6 +216,10 @@ class RunReport:
     nogo_repairs: int = 0
     review_repairs: int = 0
     review_findings: list[NogoFinding] = field(default_factory=list)
+    content_findings: list[NogoFinding] = field(default_factory=list)
+    content_uncertainties: list[str] = field(default_factory=list)
+    review_history: list[dict[str, Any]] = field(default_factory=list)
+    source_inventory: list[dict[str, Any]] = field(default_factory=list)
     review_uncertainties: list[str] = field(default_factory=list)
     include_changes: list[str] = field(default_factory=list)
     response_ids: list[str] = field(default_factory=list)
@@ -225,14 +229,40 @@ class RunReport:
     checker_failures: list[NogoCheckerFailure] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    usage_by_phase: list[dict[str, Any]] = field(default_factory=list)
+    shell_calls: int = 0
+    shell_commands: int = 0
     remote_container_id: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
-    def add_usage(self, usage: dict[str, Any]) -> None:
+    def add_usage(self, usage: dict[str, Any], *, phase: str = "unknown",
+                  raw: dict[str, Any] | None = None) -> None:
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             value = usage.get(key)
             if isinstance(value, int):
                 self.usage[key] = self.usage.get(key, 0) + value
+        input_details = usage.get('input_tokens_details', {})
+        output_details = usage.get('output_tokens_details', {})
+        cached = input_details.get('cached_tokens', 0) if isinstance(input_details, dict) else 0
+        reasoning = output_details.get('reasoning_tokens', 0) if isinstance(output_details, dict) else 0
+        shells = [x for x in (raw or {}).get('output', []) if isinstance(x, dict)
+                  and x.get('type') == 'shell_call']
+        commands = sum(len(x.get('action', {}).get('commands', [])) for x in shells
+                       if isinstance(x.get('action'), dict)
+                       and isinstance(x['action'].get('commands'), list))
+        self.shell_calls += len(shells)
+        self.shell_commands += commands
+        self.usage_by_phase.append({
+            'phase': phase,
+            'input_tokens': usage.get('input_tokens', 0),
+            'cached_input_tokens': cached,
+            'cache_write_input_tokens': (input_details.get('cache_write_tokens', 0)
+                                         if isinstance(input_details, dict) else 0),
+            'output_tokens': usage.get('output_tokens', 0),
+            'reasoning_output_tokens': reasoning,
+            'shell_calls': len(shells),
+            'shell_commands': commands,
+        })
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -246,6 +276,10 @@ class RunReport:
             "nogo_repairs": self.nogo_repairs,
             "review_repairs": self.review_repairs,
             "review_findings": [f.as_dict() for f in self.review_findings],
+            "content_findings": [f.as_dict() for f in self.content_findings],
+            "content_uncertainties": self.content_uncertainties,
+            "review_history": self.review_history,
+            "source_inventory": self.source_inventory,
             "review_uncertainties": self.review_uncertainties,
             "include_changes": self.include_changes,
             "response_ids": self.response_ids,
@@ -255,6 +289,9 @@ class RunReport:
             "checker_failures": [failure.as_dict() for failure in self.checker_failures],
             "errors": self.errors,
             "usage": self.usage,
+            "usage_by_phase": self.usage_by_phase,
+            "shell_calls": self.shell_calls,
+            "shell_commands": self.shell_commands,
             "remote_container_id": self.remote_container_id,
             "artifacts": self.artifacts,
         }

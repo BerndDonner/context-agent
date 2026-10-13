@@ -2,7 +2,9 @@ Erstelle den ConTeXt-Job vollständig.
 
 Die Sandbox enthält die entpackten oder noch gepackten Bestandteile eines Job-Archivs sowie
 ein undurchsichtig verpacktes ConTeXt-LMTX-Bündel mit der Endung `.ctxbundle`. Gehe wie folgt
-vor, ohne nach Bestätigung zu fragen:
+vor, ohne nach Bestätigung zu fragen. Du darfst benachbarte Schritte in einem
+Shell-Aufruf kombinieren, sofern du Fehler zuverlässig bemerkst. Vermeide
+überflüssige Statusaufrufe und wiederholtes Lesen derselben Dateien:
 
 1. Finde unter `/mnt/data` die Datei `agent-manifest.json`.
    - Wenn sie bereits vorhanden ist, bestimme ihr Verzeichnis als Quellwurzel. Kopiere von

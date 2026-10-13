@@ -1,6 +1,6 @@
-# context-agent 0.3 — Design, Architektur und Übergabe
+# context-agent 0.4 — Design, Architektur und Übergabe
 
-**Status:** Implementierter Stand von Version 0.3
+**Status:** Implementierter Stand von Version 0.4
 **Zweck:** Dieses Dokument ist die maßgebliche Übergabeunterlage für `context-agent/`. Wird es
 in einer späteren Unterhaltung zusammen mit dem Quellcode bereitgestellt, sollen Ziele,
 Randbedingungen, Architektur und bewusste Nicht-Ziele ohne den ursprünglichen Gesprächsverlauf
@@ -108,6 +108,33 @@ Der Agent in der Sandbox:
 - behebt spätere No-go-Befunde, ohne geschützte Inhalte zu verändern.
 
 ---
+
+### 3.4 Reproduktionsaudit und konservative Abnahme (0.4)
+
+Reproduktionsjobs (`review.reproduction: true`) nutzen zwei **unabhängige**
+Modellprüfungen auf Basis des konkreten Auftrags:
+
+- Ein Quelleninventar wird einmal aus den verbindlichen Originaleingaben erstellt.
+  Original-PDFs werden dafür unabhängig von einer vorhandenen Textebene als
+  Bilder gerendert; Quellenabschnitte, die `task.md` ausdrücklich ausnimmt,
+  dürfen nicht als fehlend bemängelt werden.
+- Die erzeugten Seiten werden gegen dieses Inventar verglichen. Fehlende
+  Zuordnungen werden nach Sichtung aller Ausgabeseiten nochmals geprüft.
+- Unabhängig davon wird die visuelle Reproduktion geprüft. Sichere Fehler
+  durchlaufen denselben automatischen Reparaturmechanismus; Zweifelsfälle
+  werden nicht in echte Fehler umgedeutet.
+
+`report.status` kennt `success`, `needs_review` und `failed`. Auch bei nur einer
+offenen Unsicherheit gilt **kein voller Erfolg** und keine Übernahme in die
+lokalen Git-Arbeitsdateien. Bei einem Reparaturversuch ist die vorherige
+Prüfhistorie in `review_history` nachvollziehbar. Das Inventar muss nicht für
+jede Reparatur neu erstellt werden.
+
+Kostenbewusste Steuerung ohne zusätzliches Shell-/Token-Budget: Der Agent fasst
+Kontrollbefehle zusammen und vermeidet No-ops. Die vorhandenen Turn-Limits
+bleiben konfigurierbar (bis zu 100 Turns). `usage_by_phase` protokolliert
+Cache-Input, Reasoning-Output und Shell-Calls je Modellrunde. Vollständigkeit
+bleibt eine visuelle/semantische Einschätzung und ist kein formaler Beweis.
 
 ## 4. Bewusste Nicht-Ziele (Stand 0.2)
 
