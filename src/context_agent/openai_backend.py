@@ -136,9 +136,9 @@ class OpenAIHostedSession:
             for path in self.direct_files:
                 self._upload(path)
 
-            expires_minutes = min(
-                60, max(20, self.job.config.limits.timeout_seconds // 60 + 5)
-            )
+            # OpenAI containers expire after inactivity, independently of the job
+            # timeout. The API currently allows at most 20 minutes here.
+            expires_minutes = 20
             try:
                 container = self._client.containers.create(
                     name=f"context-agent-{self.job.root.name}",

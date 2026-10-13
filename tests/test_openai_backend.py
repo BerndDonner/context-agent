@@ -327,3 +327,42 @@ def test_reused_original_upload_is_not_repeated(tmp_path: Path, job_factory) -> 
     session.review_pages('first', None, (source,))
     session.review_pages('second', None, (source,))
     assert len(session._uploaded) == 1
+
+
+def test_hosted_container_idle_expiration_is_independent_of_job_timeout(
+    tmp_path: Path, job_factory,  # type: ignore[no-untyped-def]
+) -> None:
+    root = job_factory(tmp_path)
+    yaml_path = root / "job.yaml"
+    yaml_path.write_text(
+        yaml_path.read_text().replace("timeout_seconds: 60", "timeout_seconds: 3600")
+    )
+    job = load_job(root)
+    assert job.config.limits.timeout_seconds == 3600
+
+    requests: list[dict[str, Any]] = []
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.bundle_path = tmp_path / "job-bundle.tar.gz"
+    session.bundle_path.write_bytes(b"job bundle")
+    session.direct_files = ()
+    session._uploaded = []
+
+    class MockFiles:
+        def create(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(id=f"file-{len(session._uploaded) + 1}")
+
+    class MockContainers:
+        def create(self, **kwargs: Any) -> Any:
+            requests.append(kwargs)
+            return SimpleNamespace(id="container-1")
+
+    session._client = SimpleNamespace(files=MockFiles(), containers=MockContainers())
+    session._prepare_remote()
+
+    assert session.container_id == "container-1"
+    assert requests[0]["expires_after"] == {
+        "anchor": "last_active_at",
+        "minutes": 20,
+    }
+    assert len(requests[0]["file_ids"]) == 2
