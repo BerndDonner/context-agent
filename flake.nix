@@ -48,6 +48,7 @@
           ps.pyyaml
           ps.pydantic
           openaiLatest
+          ps.pymupdf
 
           # Python-Entwicklungswerkzeuge
           ps.pytest
@@ -63,6 +64,11 @@
         extraShellHook = ''
           export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
           ln -sfn "$(command -v python)" .nix-python
+
+          # CLI ohne Installation in das unveraenderliche Nix-Python.
+          context-agent() {
+            python -m context_agent "$@"
+          }
         '';
 
         message = "🐍 ConTeXt Agent - development shell ready";
