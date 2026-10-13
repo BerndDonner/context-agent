@@ -210,8 +210,12 @@ Shell-Exec-Endpunkt. Ein zusätzlicher, von der Generierung unabhängiger
 Responses-Aufruf startet deshalb ausschließlich das Lint-Skript. Dessen
 Modell-Freitext wird ignoriert; verarbeitet wird ausschließlich der vom
 Prüf-Satzlauf erzeugte, mit frischem Nonce gekennzeichnete JSON-Befund aus
-`stdout` des verifizierten Shell-Aufrufs (nicht aus der Container-Dateiliste).
-Ein fehlender, ungültiger oder nicht erfolgreicher Lint-Befund ist ein Prüffehler, **kein Erfolg**.
+`stdout` des verifizierten Shell-Aufrufs. Falls die Responses API zwar
+`response.status=completed`, aber `shell_call_output.status=in_progress` liefert,
+wartet das Backend ohne weiteren Modellaufruf über die Containers-Datei-API
+auf den vollständig geschriebenen JSON-Befund. Der vorläufige Exit-Code zählt
+**nicht** als erfolgreicher Abschluss. Ein Timeout oder fehlender, ungültiger
+Befund ist ein Prüffehler, **kein Erfolg**.
 Dieser Aufruf zählt zu `max_agent_turns` und zur Tokenstatistik, auch bei
 erneuter Prüfung nach einer Reparatur. `max_nogo_repairs` gilt weiterhin.
 

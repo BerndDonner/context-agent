@@ -982,11 +982,15 @@ Der Satzlauf instrumentiert `ctxcatcodes` und `texcatcodes` (Math-Shift `$`
 als aktives Zeichen) und protokolliert nur verarbeitete `$`-Tokens. Die
 Laufzeit schreibt ausschließlich in temporäre `.context-agent-dollar-lint.*`
 Dateien und einen mit einmaligem Nonce gekennzeichneten JSON-Befund. Derselbe
-Befund wird als markierte Zeile auf `stdout` des verifizierten Shell-Aufrufs ausgegeben;
-die Container-Dateiliste wird für den Befundtransport nicht benötigt. Die bisherige `main.pdf`
+Befund wird als markierte Zeile auf `stdout` des verifizierten Shell-Aufrufs ausgegeben.
+Bei `shell_call_output.status=in_progress` ist auch ein `exit_code=0` lediglich
+vorläufig: Das Backend wartet dann ohne weiteren Modellturn über die paginierte
+Containers-Dateiliste und den Content-Endpunkt auf die nonce-gebundene
+JSON-Datei (Timeout maximal 10 Minuten und zusätzlich durch Job-Limit begrenzt).
+Fehler und Timeouts gelten nicht als erfolgreiche Prüfung. Die bisherige `main.pdf`
 wird nicht überschrieben. Die Responses API dient nur als Shell-Brücke,
-nicht als inhaltlicher Richter; der exakte Shell-Aufruf und sein Exitcode
-werden geprüft, der Modelltext verworfen, ein frischer Nonce verlangt.
+nicht als inhaltlicher Richter; der exakte Shell-Aufruf und bei abgeschlossener
+Shell sein Exitcode werden geprüft, der Modelltext verworfen, ein frischer Nonce verlangt.
 
 Der Checker erkennt auch **ausgeführte** MP-`textext`-Beschriftungen. Nicht
 verwendete Definitionen werden bewusst nicht statisch untersucht. MP-

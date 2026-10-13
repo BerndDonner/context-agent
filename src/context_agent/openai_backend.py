@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,10 @@ class UploadedFile:
 
 class OpenAIHostedSession:
     """One OpenAI Responses API session backed by a hosted shell container."""
+
+    LINT_REPORT_PATH: ClassVar[str] = "/mnt/data/work/job/result/.dollar-lint-result.json"
+    LINT_POLL_INTERVAL_SECONDS: ClassVar[float] = 2.0
+    LINT_MAX_WAIT_SECONDS: ClassVar[float] = 600.0
 
     REMOTE_RESULT_PATHS: ClassVar[dict[str, str]] = {
         "main.tex": "/mnt/data/work/job/result/main.tex",
@@ -295,13 +300,65 @@ class OpenAIHostedSession:
             downloaded[local_name] = target
         return downloaded
 
+    def _wait_for_lint_report(self, nonce: str) -> dict[str, Any]:
+        """Wait for a running hosted shell to finish writing its result file.
+
+        A completed Responses call does not imply that its shell_call_output is
+        completed. Its preliminary outcome can even contain exit_code=0. The
+        Containers Files API lets us wait without launching another model turn.
+        """
+        if self.container_id is None:
+            raise RemoteAgentError("hosted container unavailable while waiting for lint")
+
+        deadline = time.monotonic() + min(
+            float(self.job.config.limits.timeout_seconds), self.LINT_MAX_WAIT_SECONDS
+        )
+        last_issue = "report not present yet"
+        while True:
+            try:
+                # The SDK's cursor page iterator traverses additional pages.
+                files = self._client.containers.files.list(
+                    self.container_id, limit=100, order="desc"
+                )
+                report_file = next(
+                    (item for item in files
+                     if getattr(item, "path", None) == self.LINT_REPORT_PATH), None
+                )
+                if report_file is not None:
+                    content = self._client.containers.files.content.retrieve(
+                        str(report_file.id), container_id=self.container_id
+                    )
+                    data = _binary_content(content)
+                    try:
+                        report = json.loads(data.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        # The file may have been indexed before its write completed.
+                        last_issue = "report is not yet complete JSON"
+                    else:
+                        return _validate_lint_report(report, nonce)
+            except RemoteAgentError:
+                raise
+            except Exception as exc:
+                # A transient listing/download failure must not be interpreted as
+                # success. Retry until the deadline; then preserve the cause.
+                last_issue = f"container file API: {exc}"
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RemoteAgentError(
+                    "timed out waiting for dynamic ConTeXt lint report "
+                    f"in hosted container ({last_issue})"
+                )
+            time.sleep(min(self.LINT_POLL_INTERVAL_SECONDS, remaining))
+
     def run_dollar_lint(self) -> tuple[dict[str, Any], AgentTurn]:
         """Execute the deterministic ConTeXt checker in THIS hosted container.
 
         The Responses model is only an execution bridge (the Containers API has
         no direct process-exec endpoint). Its natural-language output is ignored.
-        Accept only the checker-produced JSON in the approved shell command's
-        stdout, with a fresh nonce. Do not rely on Containers file indexing.
+        Accept only the checker-produced JSON with a fresh nonce. Completed
+        shell outputs provide it on stdout; in-progress outputs require polling
+        the report file via the Containers API (without a second model turn).
         """
         import uuid
         if self.container_id is None:
@@ -310,7 +367,7 @@ class OpenAIHostedSession:
         command = (
             "bash /mnt/data/work/runtime/lint-dollar-math.sh "
             "/mnt/data/work/job/result/main.tex "
-            f"/mnt/data/work/job/result/.dollar-lint-result.json {nonce}"
+            f"{self.LINT_REPORT_PATH} {nonce}"
         )
         try:
             response = self._client.responses.create(
@@ -343,26 +400,41 @@ class OpenAIHostedSession:
                 raise RemoteAgentError("lint bridge returned no shell result")
             if len(outputs) != 1 or outputs[0].get('call_id') != calls[0].get('call_id'):
                 raise RemoteAgentError("lint shell result does not match approved command")
-            command_outputs = outputs[0].get("output")
-            if not isinstance(command_outputs, list) or len(command_outputs) != 1:
-                raise RemoteAgentError("lint shell result count is invalid")
-            outcome = command_outputs[0].get("outcome", {})
-            if not isinstance(outcome, dict) or outcome.get("type") != "exit" or outcome.get("exit_code") != 0:
-                raise RemoteAgentError(f"lint compilation failed: {outcome}")
-            stdout = command_outputs[0].get("stdout")
-            if not isinstance(stdout, str):
-                raise RemoteAgentError("lint shell stdout missing")
-            prefix = "CA-DOLLAR-LINT-REPORT-V1 "
-            reports = [line[len(prefix):] for line in stdout.splitlines()
-                       if line.startswith(prefix)]
-            if len(reports) != 1:
-                raise RemoteAgentError(
-                    f"expected exactly one lint report in shell stdout, got {len(reports)}")
-            lint_report = json.loads(reports[0])
-            if not isinstance(lint_report, dict) or lint_report.get("nonce") != nonce:
-                raise RemoteAgentError("lint report missing or stale (nonce mismatch)")
-            if not isinstance(lint_report.get("findings"), list):
-                raise RemoteAgentError("lint report has invalid findings")
+            output_status = outputs[0].get("status")
+            call_status = calls[0].get("status")
+            if output_status == "incomplete" or call_status == "incomplete":
+                raise RemoteAgentError("lint shell call was incomplete")
+            if output_status not in (None, "in_progress", "completed") or call_status not in (
+                None, "in_progress", "completed"
+            ):
+                raise RemoteAgentError("lint shell call returned an unknown status")
+
+            if output_status == "in_progress" or call_status == "in_progress":
+                # An in-progress shell output's exit_code (even 0) is NOT a
+                # completion signal. Wait for the checker's nonce-bound report.
+                lint_report = self._wait_for_lint_report(nonce)
+            else:
+                command_outputs = outputs[0].get("output")
+                if not isinstance(command_outputs, list) or len(command_outputs) != 1:
+                    raise RemoteAgentError("lint shell result count is invalid")
+                item = command_outputs[0]
+                if not isinstance(item, dict):
+                    raise RemoteAgentError("lint shell result is invalid")
+                outcome = item.get("outcome", {})
+                if (not isinstance(outcome, dict) or outcome.get("type") != "exit"
+                        or outcome.get("exit_code") != 0):
+                    raise RemoteAgentError(f"lint compilation failed: {outcome}")
+                stdout = item.get("stdout")
+                if not isinstance(stdout, str):
+                    raise RemoteAgentError("lint shell stdout missing")
+                prefix = "CA-DOLLAR-LINT-REPORT-V1 "
+                reports = [line[len(prefix):] for line in stdout.splitlines()
+                           if line.startswith(prefix)]
+                if len(reports) != 1:
+                    raise RemoteAgentError(
+                        f"expected exactly one lint report in shell stdout, got {len(reports)}"
+                    )
+                lint_report = _validate_lint_report(json.loads(reports[0]), nonce)
             usage = raw.get("usage")
             turn = AgentTurn(
                 response_id=str(response.id), status=str(getattr(response,"status","unknown")),
@@ -428,6 +500,14 @@ def _model_dump(value: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {"repr": repr(value)}
     return serialized if isinstance(serialized, dict) else {"value": serialized}
+
+
+def _validate_lint_report(report: Any, nonce: str) -> dict[str, Any]:
+    if not isinstance(report, dict) or report.get("nonce") != nonce:
+        raise RemoteAgentError("lint report missing or stale (nonce mismatch)")
+    if not isinstance(report.get("findings"), list):
+        raise RemoteAgentError("lint report has invalid findings")
+    return report
 
 
 def _binary_content(value: Any) -> bytes:
