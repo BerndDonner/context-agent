@@ -1,0 +1,30 @@
+model: gpt-6-sol
+
+task: task.md
+
+template:
+  path: template/template.tex
+
+inputs:
+  - path: input/agent-test.pdf
+    role: recreate
+    policy: verbatim
+
+references: []
+
+runtime:
+  context_archive: ~/RClone/bleau1975/ChatGPT-Sandbox/context/context-lmtx-ready.tar.xz
+  memory_limit: 4g
+  keep_remote: false
+
+limits:
+  max_agent_turns: 10
+  max_nogo_repairs: 3
+  timeout_seconds: 900
+  max_output_tokens: 12000
+
+review:
+  reproduction: true
+  max_repairs: 2
+  max_pages: 8
+  pages_per_batch: 4
