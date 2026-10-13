@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -369,7 +371,7 @@ def test_hosted_container_idle_expiration_is_independent_of_job_timeout(
 
 
 def test_dynamic_lint_shell_bridge_verifies_exact_call_and_fresh_report(
-    tmp_path: Path, job_factory, monkeypatch,
+    tmp_path: Path, job_factory,
 ) -> None:  # type: ignore[no-untyped-def]
     import json
     import re
@@ -380,21 +382,26 @@ def test_dynamic_lint_shell_bridge_verifies_exact_call_and_fresh_report(
     session.container_id = 'container-1'
 
     class LintResponses:
-        def __init__(self, *, corrupt_command: bool = False, code: int = 0) -> None:
-            self.corrupt_command = corrupt_command
-            self.code = code
+        def __init__(self) -> None:
+            self.corrupt_command = False
+            self.code = 0
             self.command = ''
+            self.stdout_override: str | None = None
 
         def create(self, **kwargs):
             request = kwargs['input'][0]['content'][0]['text']
             self.command = request.split('\n')[-1]
             command = self.command + ' echo invalid' if self.corrupt_command else self.command
+            nonce = re.search(r'\b([0-9a-f]{32})$', self.command).group(1)
+            payload = json.dumps({'nonce': nonce, 'findings': []})
+            stdout = ('CA-DOLLAR-LINT-REPORT-V1 ' + payload + '\n'
+                      if self.stdout_override is None else self.stdout_override)
             raw = {
                 'output': [
                     {'type': 'shell_call', 'call_id': 'call-1',
                      'action': {'commands': [command]}},
                     {'type': 'shell_call_output', 'call_id': 'call-1',
-                     'output': [{'stdout': '', 'stderr': '',
+                     'output': [{'stdout': stdout, 'stderr': '',
                                  'outcome': {'type': 'exit', 'exit_code': self.code}}]},
                 ],
                 'usage': {'input_tokens': 2, 'output_tokens': 1, 'total_tokens': 3},
@@ -403,14 +410,9 @@ def test_dynamic_lint_shell_bridge_verifies_exact_call_and_fresh_report(
                                    model_dump=lambda mode: raw)
 
     responses = LintResponses()
+    # No containers.files API at all: report travels through the verified
+    # shell_call_output.stdout, even when hidden container files are unlisted.
     session._client = SimpleNamespace(responses=responses)
-
-    def response_bytes(path):
-        assert path == '/mnt/data/work/job/result/.dollar-lint-result.json'
-        nonce = re.search(r'\b([0-9a-f]{32})$', responses.command).group(1)
-        return json.dumps({'nonce': nonce, 'findings': []}).encode()
-
-    monkeypatch.setattr(session, '_retrieve_container_path', response_bytes)
     payload, turn = session.run_dollar_lint()
     assert payload['findings'] == []
     assert turn.response_id == 'lint-response'
@@ -418,28 +420,28 @@ def test_dynamic_lint_shell_bridge_verifies_exact_call_and_fresh_report(
     assert turn.usage['total_tokens'] == 3
 
     responses.corrupt_command = True
-    try:
+    with pytest.raises(RemoteAgentError, match='exact approved command'):
         session.run_dollar_lint()
-    except RemoteAgentError as exc:
-        assert 'exact approved command' in str(exc)
-    else:
-        raise AssertionError('unexpected shell commands must fail closed')
 
     responses.corrupt_command = False
     responses.code = 1
-    try:
+    with pytest.raises(RemoteAgentError, match='lint compilation failed'):
         session.run_dollar_lint()
-    except RemoteAgentError as exc:
-        assert 'lint compilation failed' in str(exc)
-    else:
-        raise AssertionError('lint shell failures must fail closed')
 
     responses.code = 0
-    monkeypatch.setattr(session, '_retrieve_container_path', lambda path:
-                        b'{"nonce":"outdated", "findings":[]}')
-    try:
+    responses.stdout_override = 'CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated", "findings":[]}\n'
+    with pytest.raises(RemoteAgentError, match='stale'):
         session.run_dollar_lint()
-    except RemoteAgentError as exc:
-        assert 'stale' in str(exc)
-    else:
-        raise AssertionError('stale reports must fail closed')
+
+    responses.stdout_override = ''
+    with pytest.raises(RemoteAgentError, match='exactly one lint report'):
+        session.run_dollar_lint()
+
+    responses.stdout_override = ('CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated","findings":[]}\n'
+                                 'CA-DOLLAR-LINT-REPORT-V1 {"nonce":"outdated","findings":[]}\n')
+    with pytest.raises(RemoteAgentError, match='exactly one lint report'):
+        session.run_dollar_lint()
+
+    responses.stdout_override = 'CA-DOLLAR-LINT-REPORT-V1 not-json\n'
+    with pytest.raises(RemoteAgentError, match='dynamic ConTeXt lint failed'):
+        session.run_dollar_lint()

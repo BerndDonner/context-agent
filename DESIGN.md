@@ -981,7 +981,9 @@ an (`runtime/lint-dollar-math.sh` und `runtime/lint-dollar-setup.tex`).
 Der Satzlauf instrumentiert `ctxcatcodes` und `texcatcodes` (Math-Shift `$`
 als aktives Zeichen) und protokolliert nur verarbeitete `$`-Tokens. Die
 Laufzeit schreibt ausschließlich in temporäre `.context-agent-dollar-lint.*`
-Dateien und einen mit einmaligem Nonce gekennzeichneten JSON-Befund. Die bisherige `main.pdf`
+Dateien und einen mit einmaligem Nonce gekennzeichneten JSON-Befund. Derselbe
+Befund wird als markierte Zeile auf `stdout` des verifizierten Shell-Aufrufs ausgegeben;
+die Container-Dateiliste wird für den Befundtransport nicht benötigt. Die bisherige `main.pdf`
 wird nicht überschrieben. Die Responses API dient nur als Shell-Brücke,
 nicht als inhaltlicher Richter; der exakte Shell-Aufruf und sein Exitcode
 werden geprüft, der Modelltext verworfen, ein frischer Nonce verlangt.

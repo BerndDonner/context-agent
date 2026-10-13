@@ -72,6 +72,9 @@ findings = [{
                     'Mathematischen Inhalt unverändert lassen.'),
 } for number in sorted(lines)]
 report_path.parent.mkdir(parents=True, exist_ok=True)
-report_path.write_text(json.dumps({'nonce': nonce, 'findings': findings}, ensure_ascii=False),
-                       encoding='utf-8')
+report_json = json.dumps({'nonce': nonce, 'findings': findings}, ensure_ascii=False)
+report_path.write_text(report_json, encoding='utf-8')
+# Deliver the checker-produced report in the verified shell tool output.
+# Container file indexing need not expose this dotfile.
+print('CA-DOLLAR-LINT-REPORT-V1 ' + report_json, flush=True)
 PY

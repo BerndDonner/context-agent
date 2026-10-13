@@ -300,7 +300,8 @@ class OpenAIHostedSession:
 
         The Responses model is only an execution bridge (the Containers API has
         no direct process-exec endpoint). Its natural-language output is ignored.
-        Accept only the checker-produced JSON file with a fresh nonce.
+        Accept only the checker-produced JSON in the approved shell command's
+        stdout, with a fresh nonce. Do not rely on Containers file indexing.
         """
         import uuid
         if self.container_id is None:
@@ -348,9 +349,16 @@ class OpenAIHostedSession:
             outcome = command_outputs[0].get("outcome", {})
             if not isinstance(outcome, dict) or outcome.get("type") != "exit" or outcome.get("exit_code") != 0:
                 raise RemoteAgentError(f"lint compilation failed: {outcome}")
-            content = self._retrieve_container_path(
-                "/mnt/data/work/job/result/.dollar-lint-result.json")
-            lint_report = json.loads(content.decode("utf-8"))
+            stdout = command_outputs[0].get("stdout")
+            if not isinstance(stdout, str):
+                raise RemoteAgentError("lint shell stdout missing")
+            prefix = "CA-DOLLAR-LINT-REPORT-V1 "
+            reports = [line[len(prefix):] for line in stdout.splitlines()
+                       if line.startswith(prefix)]
+            if len(reports) != 1:
+                raise RemoteAgentError(
+                    f"expected exactly one lint report in shell stdout, got {len(reports)}")
+            lint_report = json.loads(reports[0])
             if not isinstance(lint_report, dict) or lint_report.get("nonce") != nonce:
                 raise RemoteAgentError("lint report missing or stale (nonce mismatch)")
             if not isinstance(lint_report.get("findings"), list):
@@ -366,19 +374,6 @@ class OpenAIHostedSession:
             raise
         except Exception as exc:
             raise RemoteAgentError(f"dynamic ConTeXt lint failed: {exc}") from exc
-
-    def _retrieve_container_path(self, remote_path: str) -> bytes:
-        if self.container_id is None:
-            raise RemoteAgentError("no container")
-        page = self._client.containers.files.list(self.container_id, limit=100, order="desc")
-        matches = [item for item in page
-                   if str(getattr(item, "path", "")) == remote_path]
-        if not matches:
-            raise RemoteAgentError(f"remote lint report missing: {remote_path}")
-        latest = max(matches, key=lambda item: int(getattr(item, "created_at", 0)))
-        content = self._client.containers.files.content.retrieve(
-            str(latest.id), container_id=self.container_id)
-        return _binary_content(content)
 
     def close(self) -> None:
         if self.job.config.runtime.keep_remote:

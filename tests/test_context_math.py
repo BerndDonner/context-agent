@@ -119,6 +119,10 @@ def test_real_lmtx_lint(tmp_path, name, text, expected):
                          text=True, capture_output=True, env=env)
     assert run.returncode == 0, run.stderr
     payload = json.loads(report.read_text())
+    lines = [line for line in run.stdout.splitlines()
+             if line.startswith('CA-DOLLAR-LINT-REPORT-V1 ')]
+    assert len(lines) == 1, run.stdout
+    assert json.loads(lines[0].split(' ', 1)[1]) == payload
     assert bool(payload['findings']) is expected
     assert payload['nonce'] == 'test-nonce'
     assert not (tmp_path / '.context-agent-dollar-lint.tex').exists()

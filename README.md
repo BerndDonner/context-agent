@@ -208,9 +208,10 @@ Mehrfachtreffer je Zeile werden zusammengefasst.
 **API-Besonderheit:** Die Containers API hat keinen unmittelbaren
 Shell-Exec-Endpunkt. Ein zusätzlicher, von der Generierung unabhängiger
 Responses-Aufruf startet deshalb ausschließlich das Lint-Skript. Dessen
-Modell-Freitext wird ignoriert; verarbeitet wird ausschließlich die vom
-Prüf-Satzlauf erstellte JSON-Datei mit frischem Nonce. Fehlender, ungültiger
-oder nicht erfolgreicher Lint-Befund ist ein Prüffehler, **kein Erfolg**.
+Modell-Freitext wird ignoriert; verarbeitet wird ausschließlich der vom
+Prüf-Satzlauf erzeugte, mit frischem Nonce gekennzeichnete JSON-Befund aus
+`stdout` des verifizierten Shell-Aufrufs (nicht aus der Container-Dateiliste).
+Ein fehlender, ungültiger oder nicht erfolgreicher Lint-Befund ist ein Prüffehler, **kein Erfolg**.
 Dieser Aufruf zählt zu `max_agent_turns` und zur Tokenstatistik, auch bei
 erneuter Prüfung nach einer Reparatur. `max_nogo_repairs` gilt weiterhin.
 
