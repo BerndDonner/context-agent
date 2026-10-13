@@ -74,7 +74,8 @@ class ReviewSpec(BaseModel):
 
     # Disabled for jobs that create new content rather than reproduce a reference.
     reproduction: bool = False
-    max_repairs: int = Field(default=2, ge=0, le=10)
+    max_content_repairs: int = Field(default=2, ge=0, le=20)
+    max_visual_repairs: int = Field(default=2, ge=0, le=20)
     max_pages: int = Field(default=40, ge=1, le=200)
     pages_per_batch: int = Field(default=4, ge=1, le=8)
 
@@ -214,7 +215,9 @@ class RunReport:
     finished_at: datetime | None = None
     agent_turns: int = 0
     nogo_repairs: int = 0
-    review_repairs: int = 0
+    review_repairs: int = 0  # total content + visual repairs
+    content_repairs: int = 0
+    visual_repairs: int = 0
     review_findings: list[NogoFinding] = field(default_factory=list)
     content_findings: list[NogoFinding] = field(default_factory=list)
     content_uncertainties: list[str] = field(default_factory=list)
@@ -275,6 +278,8 @@ class RunReport:
             "agent_turns": self.agent_turns,
             "nogo_repairs": self.nogo_repairs,
             "review_repairs": self.review_repairs,
+            "content_repairs": self.content_repairs,
+            "visual_repairs": self.visual_repairs,
             "review_findings": [f.as_dict() for f in self.review_findings],
             "content_findings": [f.as_dict() for f in self.content_findings],
             "content_uncertainties": self.content_uncertainties,

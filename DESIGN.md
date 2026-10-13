@@ -938,7 +938,7 @@ implementiert; die vorhandenen lokalen deterministischen Python-Checker bleiben
 unverändert benutzbar. Keine fachspezifischen Regeln sind einprogrammiert.
 
 Jede Modellrunde, einschließlich reiner Sichtprüfung, zählt zu
-`limits.max_agent_turns`; `review.max_repairs` begrenzt die gezielte Reproduktion.
+`limits.max_agent_turns`; `review.max_content_repairs` und `review.max_visual_repairs` begrenzen die jeweiligen Reparaturschleifen unabhängig.
 Abbruch wegen Seitenlimit, Modellbudget oder Review-Fehler bedeutet einen
 fehlgeschlagenen Lauf, niemals stillschweigende Annahme eines perfekten Ergebnisses.
 
@@ -992,3 +992,35 @@ Konstanten in zwei unabhängigen Konstruktionselementen korrekt sein können.
 Der inzwischen durchgeführte CTC-Livetest (`gpt-6-sol`) erreichte
 `status=success` mit vier Agent-Runden und einer Reproduktionsreparatur.
 Er lief noch **vor** dem neuen Built-in und vor einem Flex-Livetest.
+
+
+## 0.6.0 – Checkpointed resume, getrennte Reparaturbudgets und Live-Fortschritt
+
+- `run` persistiert `result/checkpoint.json` (Schema 1) bei Beginn, nach
+  Quelleninventar, Erzeugung, nach geprüften Phasen und Reparaturen sowie beim
+  Abschluss. Checkpoints sind nur konsistente Phasengrenzen, keine vollständige
+  Wiederherstellung während einer einzelnen noch offenen API-Anfrage.
+- `resume` setzt einen **neuen** Hosted-Container und eine frische
+  Modellkonversation auf. Es nutzt `main.tex`, `main.pdf`, `context.log`, den
+  gespeicherten Include-Snapshot sowie report/checkpoint als Zustand. Die alte
+  Response-ID wird zur Nachvollziehbarkeit gespeichert, aber nie für eine
+  containerübergreifende `previous_response_id`-Kette verwendet.
+- SHA-256 über Konfiguration, Quellen, Referenzen, Template, Helfer,
+  ConTeXt-Archiv und Checkers verhindert versehentliche Wiederaufnahme nach
+  Quelländerungen. **Keine Migration alter Ergebnisse ohne Checkpoint.**
+- Während Resume bleibt `result/` unverändert; `.resume-work/` ist eine
+  persistente isolierte Arbeitskopie. Nur bei `success` wird das vorherige
+  Ergebnis nach `.run-history/` verschoben und die neue Version eingesetzt.
+  Gescheiterte Fortsetzungen lassen die Stage für weitere Versuche stehen.
+- Budgets: `limits.max_nogo_repairs`, `review.max_content_repairs`,
+  `review.max_visual_repairs`. Jede Kategorie hat ihren eigenen Zähler; die
+  Gesamtrundengrenze bleibt erhalten. Der neue Versuch hat eigene Limits,
+  vergangene Versuche bleiben in den alten Berichten dokumentiert.
+- Das Modell verwendet bei schwer lesbaren Quellen `% [Scan unklar: ...]`
+  direkt am betreffenden ConTeXt-Quelltext; nur plausible Wiedergabe oder `?`
+  wird sichtbar gesetzt. Sichtbare Scan-Marker werden vor der
+  Reproduktionsprüfung als No-go erkannt. `uncertainties.md` schreibt der
+  lokale Orchestrator und nicht das Modell.
+- Phasenfortschritt schreibt `Progress` auf stderr, der maschinenlesbare
+  Abschlussbericht bleibt auf stdout. Es gibt weder einen erfundenen
+  Token-Fortschritt während eines API-Aufrufs noch neue Shell-Limits.

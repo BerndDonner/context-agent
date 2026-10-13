@@ -132,7 +132,8 @@ limits:
 # Nur für originalgetreue Reproduktionsaufträge einschalten.
 review:
   reproduction: true
-  max_repairs: 2
+  max_content_repairs: 3
+  max_visual_repairs: 3
   max_pages: 40
   pages_per_batch: 4
 ```
@@ -211,6 +212,8 @@ Verbot fester Zahlen: Maße, Abstände und unabhängige Koordinaten bleiben erla
 ```bash
 context-agent validate /pfad/zum/mein-job
 context-agent run /pfad/zum/mein-job
+# Nach fehlgeschlagenem oder abgebrochenem Lauf MIT Checkpoint:
+context-agent resume /pfad/zum/mein-job
 ```
 
 Ein erfolgreicher Lauf schreibt nach `result/`:
@@ -222,6 +225,8 @@ context.log
 include-snapshot.tar.gz
 report.json
 transcript.jsonl
+checkpoint.json
+uncertainties.md  # nur bei unklaren Quellenstellen
 ```
 
 `review.reproduction` ist standardmäßig **ausgeschaltet**. Ohne diese Option bleibt
@@ -272,6 +277,12 @@ Das Ergebnis `result/report.json` unterscheidet:
 - `failed`: Fehler, offene bestätigte Befunde oder nicht abgeschlossene Prüfung;
   Exitcode 1, keine Include-Übernahme.
 
+Die Inhalts- und Sichtprüfungen haben **getrennte** Reparaturbudgets unter
+`review.max_content_repairs` und `review.max_visual_repairs`. No-go-Reparaturen
+verwenden weiterhin `limits.max_nogo_repairs`. `review_repairs` zählt beide
+Reproduktionstypen zusammen; `content_repairs` und `visual_repairs` sind getrennt
+im Bericht aufgeführt. Die Rundenobergrenze `limits.max_agent_turns` bleibt gültig.
+
 Der Bericht enthält `source_inventory`, `content_findings`, `content_uncertainties`,
 `review_findings`, `review_uncertainties` und eine `review_history` aller
 Prüfdurchgänge. `usage_by_phase` weist Input-/Output-Tokens, Cache-Hits,
@@ -291,6 +302,56 @@ Die Prüfung ist ein **best-effort Modellvergleich, kein formaler Beweis** einer
 100-prozentigen Reproduktion. Besonders bei schlecht lesbaren Scans bleibt die
 abschließende menschliche Kontrolle wichtig.
 
+
+### Checkpoints und `resume` (Version 0.6.0)
+
+Neue Runs schreiben automatisch `result/checkpoint.json`, auch bei gescheiterter
+Abnahme. Darin liegen Eingabe-Fingerprints (SHA-256), Quelleninventar, bisherige
+Befunde und Unsicherheiten, die Reparaturzähler, der aktuelle Verarbeitungsschritt
+und die letzte Generator-Response-ID als **Referenz**. Das `transcript.jsonl`
+bleibt zusätzlich als ausführliches Protokoll erhalten. **Die alte API-Konversation
+und der alte Hosted-Container werden nicht vorausgesetzt oder fortgeführt.**
+
+```bash
+context-agent resume examples/ca-messtechnik
+```
+
+`resume` akzeptiert ausschließlich Runs mit diesem Checkpoint-Schema. **Es gibt
+keine Unterstützung für alte Runs ohne Checkpoint.** Alle Eingaben, `job.yaml`,
+Template, `include/`, das ConTeXt-Archiv und ggf. No-go-Regeln müssen gegenüber
+dem gespeicherten Fingerprint bytegleich bleiben; andernfalls wird verweigert.
+Der neue Hosted-Container bekommt den vorhandenen `main.tex`, `main.pdf`, Log,
+Include-Snapshot und die Prüfdateien aus dem Checkpoint. Bereits erstellte
+Quelleninventare werden wiederverwendet; das Dokument wird nicht pauschal neu
+erstellt, sondern nur für konkrete Fehler nachbearbeitet. Die Prüfungen werden
+anschließend unabhängig erneut ausgeführt. Nicht vollständig beendete Phasen
+können dabei erneut durchlaufen werden.
+
+Während `resume` wird **nicht direkt in `result/` gearbeitet**. Stattdessen
+steht der neue Arbeitsstand in `.resume-work/`. Erst bei `success` wird der
+bisherige Ordner in `.run-history/<Zeitstempel>-previous/` archiviert und
+`.resume-work/` nach `result/` verschoben. Bei Fehlschlag oder `needs_review`
+bleiben das originale `result/` und die erneut aufnehmbare `.resume-work/`
+getrennt erhalten. Checkpoints sind keine Garantie für Wiederaufnahme mitten in
+einem einzelnen API-Aufruf: Ein unterbrochener Aufruf muss wiederholt werden.
+
+### Unsichere Scanstellen
+
+Der Agent schreibt bei einer plausiblen, aber unsicheren Lesart die plausible
+Transkription ins Dokument, unmittelbar daneben im Quelltext einen
+`% [Scan unklar: Originalseite/Aufgabe, Beschreibung]`-Kommentar. Wenn keine
+plausible Lesart möglich ist, steht ein sichtbares `?`. Eine sichtbare
+`[Scan unklar: ...]`-Notiz im PDF ist bei Reproduktionsjobs ein lokaler
+No-go-Verstoß. `result/uncertainties.md` enthält die offenen Punkte separat.
+Sie verhindern weiterhin `success`, aber die Kommentare erscheinen nicht im PDF.
+
+### Fortschrittsanzeige
+
+Während langer Runs werden Phasen, Seitenblöcke, Reparaturbeginn/-ende und
+Abschluss mit verstrichener Zeit auf **stderr** ausgegeben. **stdout** bleibt dem
+abschließenden JSON-Bericht vorbehalten. Innerhalb eines noch laufenden
+Responses-API-Aufrufs gibt es ohne Streaming keinen Zwischenfortschritt.
+
 ### Include-Roundtrip und Git
 
 Der Container erstellt nach jedem erfolgreichen Compile/Repair mit
@@ -305,8 +366,8 @@ Bestehende uncommittete Include-Dateien werden **nicht überschrieben**. Es gibt
 weder automatische Git-Commits noch Pushes; danach selbst `git diff` und
 `git status` prüfen. Bei fehlgeschlagenen Prüfungen bleibt `job/include/` unverändert.
 
-`result/` enthält weiterhin auch bei gescheiterten Checks das letzte vollständige
-Artefaktset zur Diagnose. Das heißt nicht, dass dieses Ergebnis abgenommen wurde.
+`result/` enthält bei gescheiterten normalen Runs den letzten vollständigen
+Artefaktstand; bei gescheitertem `resume` bleibt das vorherige `result/` intakt. Das heißt nicht, dass dieses Ergebnis abgenommen wurde.
 
 Der Exitcode ist `0` bei vollständigem Erfolg, `1` bei einem ausgeführten, aber nicht
 abgenommenen Job und `2` bei ungültiger Konfiguration.

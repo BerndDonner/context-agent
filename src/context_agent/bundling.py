@@ -6,11 +6,13 @@ import tarfile
 from pathlib import Path
 
 from context_agent.models import ResolvedJob
+from context_agent.include_sync import read_include_snapshot
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path) -> Path:
+def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
+                     *, resume_result: Path | None = None) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "task": f"job/{job.config.task}",
@@ -28,6 +30,14 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path) -> 
     }
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
 
+    overrides = (read_include_snapshot(resume_result / 'include-snapshot.tar.gz')
+                 if resume_result is not None and
+                 (resume_result / 'include-snapshot.tar.gz').is_file() else {})
+    if resume_result is not None and not overrides and any(job.include_dir.rglob('*')):
+        # Empty snapshots are valid only for projects without include files.
+        if any(x.is_file() for x in job.include_dir.rglob('*')):
+            raise ValueError('resume requires a complete include snapshot')
+
     with tarfile.open(destination, mode="w:gz") as archive:
         for path in sorted(job.root.rglob("*")):
             if _skip_path(job, path):
@@ -35,8 +45,23 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path) -> 
             if path.is_symlink():
                 continue
             if path.is_file():
-                arcname = Path("job") / path.relative_to(job.root)
+                relative = path.relative_to(job.root)
+                if relative.parts[0] == 'include' and relative.as_posix()[8:] in overrides:
+                    continue
+                arcname = Path("job") / relative
                 archive.add(path, arcname=arcname, recursive=False)
+
+        if resume_result is not None:
+            for relative, data in sorted(overrides.items()):
+                info = tarfile.TarInfo(f'job/include/{relative}')
+                info.mode = 0o644
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            for name in ('main.tex', 'main.pdf', 'context.log', 'include-snapshot.tar.gz',
+                         'report.json', 'checkpoint.json', 'transcript.jsonl', 'uncertainties.md'):
+                source = resume_result / name
+                if source.is_file():
+                    archive.add(source, arcname=f'job/result/{name}', recursive=False)
 
         for path in sorted(runtime_dir.rglob("*")):
             if path.is_file() and not path.is_symlink():
@@ -71,5 +96,5 @@ def _skip_path(job: ResolvedJob, path: Path) -> bool:
         relative = path.relative_to(job.root)
     except ValueError:
         return True
-    return bool(relative.parts and relative.parts[0] in {"result", "nogos"})
+    return bool(relative.parts and relative.parts[0] in {"result", "nogos", ".resume-work", ".run-history"})
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
+from dataclasses import replace
+from datetime import datetime, UTC
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 
 from context_agent.bundling import build_job_bundle, direct_model_files
+from context_agent.checkpoint import SCHEMA, fingerprint, read_checkpoint, save_checkpoint
 from context_agent.content_audit import (
     InventoryEntry, missing_prompt, output_prompt, parse_inventory,
     parse_missing, parse_output_check, source_prompt,
@@ -27,6 +30,8 @@ from context_agent.models import (
 )
 from context_agent.nogos import NogoContext, findings_as_prompt, load_checkers, run_checkers
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
+from context_agent.progress import Progress
+from context_agent.scan_markers import visible_scan_markers
 from context_agent.prompts import (
     load_prompt,
     render_initial_prompt,
@@ -55,15 +60,38 @@ def run_job(
     session_factory: SessionFactory = default_session_factory,
     prompt_directory: Path | None = None,
     runtime_directory: Path | None = None,
+    resume: bool = False,
 ) -> RunReport:
     """Run one complete generation and no-go repair workflow.
 
     The function deliberately keeps the outer workflow small. The hosted model is responsible
     for inspecting files, compiling ConTeXt, and repairing compiler failures inside its sandbox.
     """
-    job = load_job(job_directory)
+    original_job = load_job(job_directory)
+    progress = Progress()
+    stored: dict | None = None
+    stage = original_job.root / '.resume-work'
+    if resume:
+        # No migration from reports/transcripts produced before checkpoints.
+        stored = read_checkpoint(original_job)
+        if stage.exists():
+            if not stage.is_dir():
+                raise ContextAgentError('resume staging path is not a directory')
+            # A previous interrupted resume can also be continued.
+            staged_job = replace(original_job, result_dir=stage)
+            staged = read_checkpoint(staged_job)
+            stored = staged
+        else:
+            shutil.copytree(original_job.result_dir, stage)
+        job = replace(original_job, result_dir=stage)
+        progress('Resume: gespeicherten Arbeitsstand in separater Stage geöffnet')
+    else:
+        if stage.exists():
+            raise ContextAgentError('unfinished resume work exists; complete resume or remove .resume-work explicitly')
+        job = original_job
+        prepare_result_directory(job.result_dir)
+        progress(f'Job gestartet: {job.root.name}')
     include_transaction = IncludeTransaction.capture(job.include_dir)
-    prepare_result_directory(job.result_dir)
 
     resource_root = Path(__file__).resolve().parent / "resources"
     prompt_dir = (prompt_directory or resource_root / "prompts").resolve()
@@ -79,69 +107,163 @@ def run_job(
     report_path = job.result_dir / "report.json"
     transcript_path = job.result_dir / "transcript.jsonl"
     session: AgentSession | None = None
+    input_fingerprint = fingerprint(original_job)
+    source_uncertainties: list[str] = list(stored.get('source_uncertainties', [])) if stored else []
+    phase_state = 'started'
+    generator_response_id: str | None = None
+    if stored:
+        report.source_inventory = list(stored.get('source_inventory', []))
+        report.review_history = list(stored.get('review_history', []))
+        # A new attempt gets a new repair budget, but historical totals remain visible.
+        old_report = stored.get('report') or {}
+        report.nogo_repairs = int(old_report.get('nogo_repairs', 0))
+        report.content_repairs = int(old_report.get('content_repairs', 0))
+        report.visual_repairs = int(old_report.get('visual_repairs', 0))
+        report.review_repairs = report.content_repairs + report.visual_repairs
+        for name in ('findings', 'content_findings', 'review_findings'):
+            values = old_report.get(name, [])
+            setattr(report, name, [NogoFinding(**value) for value in values])
+        report.content_uncertainties = list(old_report.get('content_uncertainties', []))
+        report.review_uncertainties = list(old_report.get('review_uncertainties', []))
+
+    def checkpoint(phase: str) -> None:
+        nonlocal phase_state
+        phase_state = phase
+        save_checkpoint(job.result_dir / 'checkpoint.json', {
+            'schema': SCHEMA,
+            'inputs': input_fingerprint,
+            'phase': phase,
+            'source_inventory': report.source_inventory,
+            'source_uncertainties': source_uncertainties,
+            'review_history': report.review_history,
+            'generator_response_id': generator_response_id,  # reference only, never trusted for fresh container
+            'report': report.as_dict(),
+            'working_summary': ('Resume the saved ConTeXt artifacts; do not regenerate the '
+                                'document unless artifacts are missing. Recheck after repairs.'),
+        })
+
+    checkpoint('resuming' if resume else 'started')
+
+    def finish(state: ArtifactState) -> RunReport:
+        outcome = _finish(report, state, report_path)
+        checkpoint('finished-' + report.status)
+        if resume and report.status == 'success':
+            history = original_job.root / '.run-history'
+            history.mkdir(exist_ok=True)
+            previous = history / (datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ') + '-previous')
+            os.replace(original_job.result_dir, previous)
+            try:
+                os.replace(job.result_dir, original_job.result_dir)
+            except OSError:
+                os.replace(previous, original_job.result_dir)
+                raise
+            # Returned paths and the durable report must refer to the installed result.
+            report.artifacts = {
+                name: str(original_job.result_dir / name)
+                for name in report.artifacts
+            }
+            write_report(report, original_job.result_dir / 'report.json')
+            progress(f'Resume erfolgreich; vorheriger Stand gesichert: {previous}')
+        elif resume:
+            progress('Resume nicht erfolgreich; result/ unverändert, Arbeitsstand unter .resume-work/')
+        else:
+            progress(f'Job beendet: {report.status}')
+        return outcome
 
     try:
         with tempfile.TemporaryDirectory(prefix="context-agent-") as temporary:
             bundle_path = Path(temporary) / "context-agent-job.tar.gz"
-            build_job_bundle(job, bundle_path, runtime_dir)
+            build_job_bundle(job, bundle_path, runtime_dir,
+                             resume_result=(job.result_dir if resume else None))
             direct_files = direct_model_files(job)
             system_prompt = load_prompt(prompt_dir, "system.md")
+            progress('Hosted-Container wird vorbereitet')
             session = session_factory(job, bundle_path, direct_files, system_prompt)
             report.remote_container_id = session.container_id
+            progress('Hosted-Container bereit')
 
             # Capture the sources BEFORE creation, in stateless model requests.
             # Keep rendered source pages alive for subsequent independent visual
             # comparisons, including after a repair cycle.
             scope = reproduction_scope(job) if job.config.review.reproduction else ""
             source_entries: list[InventoryEntry] = []
-            source_uncertainties: list[str] = []
             source_visuals: list[tuple[str, Path]] = []
             if job.config.review.reproduction:
-                source_entries, source_uncertainties, source_visuals = _inventory_sources(
-                    session=session, job=job, scope=scope,
-                    source_directory=Path(temporary) / "source-pages",
+                if resume and report.source_inventory:
+                    source_entries = [InventoryEntry(**entry) for entry in report.source_inventory]
+                    source_visuals = _render_source_visuals(
+                        job, Path(temporary) / 'source-pages')
+                    progress(f'Quelleninventar wiederverwendet: {len(source_entries)} Einträge')
+                else:
+                    progress('Quelleninventar wird erstellt')
+                    source_entries, source_uncertainties, source_visuals = _inventory_sources(
+                        session=session, job=job, scope=scope,
+                        source_directory=Path(temporary) / "source-pages",
+                        report=report, transcript_path=transcript_path,
+                        progress=progress,
+                    )
+                    report.source_inventory = [entry.as_dict() for entry in source_entries]
+                    checkpoint('inventory-complete')
+                    progress(f'Quelleninventar fertig: {len(source_entries)} Einträge')
+
+            state = _artifact_state(job.result_dir) if resume else ArtifactState(None, None, None)
+            if resume and not _missing_artifacts(state):
+                progress('Vorhandene PDF und ConTeXt-Quellen übernommen; keine Neugenerierung')
+                # New container has no generation conversation. It will be bootstrapped
+                # only if a targeted repair is required.
+            else:
+                if not _may_turn(report, job):
+                    raise ContextAgentError('Quelleninventar verbrauchte alle Agentenrunden')
+                initial_prompt = render_initial_prompt(job, prompt_dir)
+                if job.config.review.reproduction:
+                    initial_prompt += ("\n\nVORAB ERSTELLTES QUELLENINVENTAR:\n" +
+                                       json.dumps(report.source_inventory, ensure_ascii=False) +
+                                       "\nUnsichere Originalstellen NICHT als sicher ausgeben:\n" +
+                                       json.dumps(source_uncertainties, ensure_ascii=False))
+                    initial_prompt += _uncertainty_generation_instruction()
+                progress('Dokumenterzeugung gestartet')
+                turn = _call_turn(
+                    session=session, prompt=initial_prompt,
+                    previous_response_id=None, phase='initial',
                     report=report, transcript_path=transcript_path,
                 )
-                report.source_inventory = [entry.as_dict() for entry in source_entries]
+                generator_response_id = turn.response_id
+                state = _sync_state(session, job.result_dir)
+                checkpoint('generated')
+                progress(f'Dokumentartefakte synchronisiert: {len(_missing_artifacts(state))} fehlen')
 
-            if not _may_turn(report, job):
-                raise ContextAgentError(
-                    'Source inventory consumed all max_agent_turns before generation; '
-                    'increase limits.max_agent_turns. No document was generated.')
-            initial_prompt = render_initial_prompt(job, prompt_dir)
-            if job.config.review.reproduction:
-                initial_prompt += ("\n\nVORAB ERSTELLTES QUELLENINVENTAR (nur Checkliste; "
-                                   "task.md und die Originalquellen bleiben maßgeblich):\n" +
-                                   json.dumps(report.source_inventory, ensure_ascii=False) +
-                                   "\nUnklare Originalstellen NICHT erraten:\n" +
-                                   json.dumps(source_uncertainties, ensure_ascii=False))
-            turn = _call_turn(
-                session=session,
-                prompt=initial_prompt,
-                previous_response_id=None,
-                phase="initial",
-                report=report,
-                transcript_path=transcript_path,
-            )
-            state = _sync_state(session, job.result_dir)
+            def repair(text: str, phase: str) -> ArtifactState:
+                nonlocal generator_response_id
+                if generator_response_id is None:
+                    # The previous model response and old container are deliberately
+                    # NOT resumed. Bootstrap the fresh container using bundled artifacts.
+                    bootstrap = render_resume_prompt(job, prompt_dir,
+                                                     source_uncertainties=source_uncertainties)
+                    prompt = bootstrap + '\n\nAKTUELLER REPARATURAUFTRAG:\n' + text
+                else:
+                    prompt = text
+                if job.config.review.reproduction:
+                    prompt += _uncertainty_generation_instruction()
+                progress(f'Reparatur gestartet: {phase}')
+                result = _call_turn(session=session, prompt=prompt,
+                                    previous_response_id=generator_response_id,
+                                    phase=phase, report=report,
+                                    transcript_path=transcript_path)
+                generator_response_id = result.response_id
+                updated = _sync_state(session, job.result_dir)
+                checkpoint('repair-complete')
+                progress(f'Reparatur beendet: {phase}')
+                return updated
 
             while _missing_artifacts(state) and _may_turn(report, job):
                 prompt = render_missing_artifacts_prompt(_missing_artifacts(state), prompt_dir)
-                turn = _call_turn(
-                    session=session,
-                    prompt=prompt,
-                    previous_response_id=turn.response_id,
-                    phase="repair-artifacts",
-                    report=report,
-                    transcript_path=transcript_path,
-                )
-                state = _sync_state(session, job.result_dir)
+                state = repair(prompt, 'repair-artifacts')
 
             missing = _missing_artifacts(state)
             if missing:
                 report.errors.append("Missing or invalid result artifacts: " + ", ".join(missing))
                 report.status = "failed"
-                return _finish(report, state, report_path)
+                return finish(state)
 
             checkers, load_failures = load_checkers(job.nogo_directory)
             report.checker_failures.extend(load_failures)
@@ -149,8 +271,10 @@ def run_job(
                 report.errors.append("One or more no-go checkers could not be loaded.")
 
             nogo_repairs = 0
-            review_repairs = 0
+            content_repairs = 0
+            visual_repairs = 0
             while not report.checker_failures:
+                progress('Lokale No-go-Prüfung gestartet')
                 assert state.main_tex is not None
                 assert state.include_snapshot is not None
                 # Review helpers from the *same* sandbox snapshot as main.tex.
@@ -170,34 +294,34 @@ def run_job(
                         include_override=include_stage,
                     )
                     findings, runtime_failures = run_checkers(checkers, context)
+                    if job.config.review.reproduction:
+                        findings.extend(visible_scan_markers(state.main_tex))
                 report.checker_failures.extend(runtime_failures)
                 report.findings = findings
                 if runtime_failures:
                     report.errors.append("One or more no-go checkers failed during execution.")
                     break
                 if findings:
+                    progress(f'No-go-Prüfung: {len(findings)} Verstöße')
                     if nogo_repairs >= job.config.limits.max_nogo_repairs or not _may_turn(report, job):
                         break
                     nogo_repairs += 1
                     report.nogo_repairs = nogo_repairs
-                    turn = _call_turn(
-                        session=session, prompt=findings_as_prompt(findings),
-                        previous_response_id=turn.response_id,
-                        phase=f"repair-nogos-{nogo_repairs}", report=report,
-                        transcript_path=transcript_path,
-                    )
-                    state = _sync_state(session, job.result_dir)
+                    state = repair(findings_as_prompt(findings),
+                                   f'repair-nogos-{nogo_repairs}')
                     if _missing_artifacts(state):
                         report.errors.append("A no-go repair destroyed required artifacts.")
                         break
                     continue
 
+                progress('Lokale No-go-Prüfung bestanden')
                 report.review_findings = []
                 report.review_uncertainties = []
                 report.content_findings = []
                 report.content_uncertainties = []
                 if job.config.review.reproduction:
                     report.content_uncertainties = list(source_uncertainties)
+                    progress('Unabhängige Inhaltsprüfung gestartet')
 
                     assert state.main_pdf is not None
                     with tempfile.TemporaryDirectory(prefix="context-agent-content-") as temporary:
@@ -212,6 +336,8 @@ def run_job(
                             prompt = output_prompt(source_entries, scope=scope,
                                                    start=offset + 1, end=offset + len(batch),
                                                    total=len(output_pages))
+                            progress(f'Inhalt: Ausgabeseiten {offset + 1}-{offset + len(batch)} '
+                                     f'von {len(output_pages)}')
                             checked = _call_review(
                                 session=session, prompt=prompt, previous_response_id=None,
                                 pages=batch, report=report, transcript_path=transcript_path,
@@ -247,22 +373,21 @@ def run_job(
                         "phase": "content", "findings": [f.as_dict() for f in content_findings],
                         "uncertainties": list(report.content_uncertainties),
                     })
+                    checkpoint('content-reviewed')
                     if content_findings:
-                        if review_repairs >= job.config.review.max_repairs or not _may_turn(report, job):
+                        progress(f'Inhaltsprüfung: {len(content_findings)} Fehler')
+                        if content_repairs >= job.config.review.max_content_repairs or not _may_turn(report, job):
                             break
-                        review_repairs += 1
-                        report.review_repairs = review_repairs
-                        turn = _call_turn(
-                            session=session, prompt=repair_prompt(content_findings, scope=scope),
-                            previous_response_id=turn.response_id,
-                            phase=f"repair-content-{review_repairs}", report=report,
-                            transcript_path=transcript_path,
-                        )
-                        state = _sync_state(session, job.result_dir)
+                        content_repairs += 1
+                        report.content_repairs += 1
+                        report.review_repairs += 1
+                        state = repair(repair_prompt(content_findings, scope=scope),
+                                       f'repair-content-{content_repairs}')
                         if _missing_artifacts(state):
                             report.errors.append("A content repair destroyed required artifacts.")
                             break
                         continue
+                    progress('Unabhängige Sichtprüfung gestartet')
                     review_findings: list[NogoFinding] = []
                     with tempfile.TemporaryDirectory(prefix="context-agent-review-") as temporary:
                         assert state.main_pdf is not None
@@ -280,6 +405,8 @@ def run_job(
                             # Originals first, then this output batch. Every visual
                             # reviewer sees the originals but no generator transcript.
                             visual_pages = tuple(path for _, path in source_visuals) + batch
+                            progress(f'Sichtprüfung: Ausgabeseiten {offset + 1}-{offset + len(batch)} '
+                                     f'von {len(pages)}')
                             checked = _call_review(session=session, prompt=prompt,
                                                    previous_response_id=None,
                                                    pages=visual_pages, report=report,
@@ -295,25 +422,23 @@ def run_job(
                         "phase": "visual", "findings": [f.as_dict() for f in review_findings],
                         "uncertainties": list(report.review_uncertainties),
                     })
+                    checkpoint('visual-reviewed')
                     if review_findings:
-                        if review_repairs >= job.config.review.max_repairs or not _may_turn(report, job):
+                        progress(f'Sichtprüfung: {len(review_findings)} Fehler')
+                        if visual_repairs >= job.config.review.max_visual_repairs or not _may_turn(report, job):
                             break
-                        review_repairs += 1
-                        report.review_repairs = review_repairs
-                        prompt = repair_prompt(review_findings, scope=scope)
-                        turn = _call_turn(
-                            session=session, prompt=prompt,
-                            previous_response_id=turn.response_id,
-                            phase=f"repair-reproduction-{review_repairs}", report=report,
-                            transcript_path=transcript_path,
-                        )
-                        state = _sync_state(session, job.result_dir)
+                        visual_repairs += 1
+                        report.visual_repairs += 1
+                        report.review_repairs += 1
+                        state = repair(repair_prompt(review_findings, scope=scope),
+                                       f'repair-reproduction-{visual_repairs}')
                         if _missing_artifacts(state):
                             report.errors.append("A reproduction repair destroyed required artifacts.")
                             break
                         continue
                 # Uncertainty is NOT proof of fidelity. Do not change Git files.
                 if report.review_uncertainties or report.content_uncertainties:
+                    progress('Offene Quellunsicherheiten: manuelle Prüfung erforderlich')
                     report.status = "needs_review"
                     break
                 # Do not touch Git working files before all checks succeeded.
@@ -335,16 +460,16 @@ def run_job(
                 if report.checker_failures:
                     report.errors.append("No-go checker failure prevents acceptance.")
 
-            return _finish(report, state, report_path)
+            return finish(state)
 
     except ContextAgentError as exc:
         report.status = "failed"
         report.errors.append(str(exc))
-        return _finish(report, _artifact_state(job.result_dir), report_path)
+        return finish(_artifact_state(job.result_dir))
     except Exception as exc:
         report.status = "failed"
         report.errors.append(f"Unexpected error: {type(exc).__name__}: {exc}")
-        _finish(report, _artifact_state(job.result_dir), report_path)
+        finish(_artifact_state(job.result_dir))
         raise
     finally:
         if session is not None:
@@ -425,6 +550,7 @@ def _require_review_turn(report: RunReport, job: ResolvedJob) -> None:
 def _inventory_sources(
     *, session: AgentSession, job: ResolvedJob, scope: str,
     source_directory: Path, report: RunReport, transcript_path: Path,
+    progress: Progress | None = None,
 ) -> tuple[list[InventoryEntry], list[str], list[tuple[str, Path]]]:
     """Read original sources before generation; retain images for later review."""
     entries: list[InventoryEntry] = []
@@ -444,6 +570,10 @@ def _inventory_sources(
             source_visuals.extend((f'{item.relative_path}, Originalseite {i}', page)
                                   for i, page in enumerate(pages, 1))
             for offset in range(0, len(pages), job.config.review.pages_per_batch):
+                if progress:
+                    progress(f'Quelleninventar: {item.relative_path}, Seiten {offset + 1}-'
+                             f'{min(offset + job.config.review.pages_per_batch, len(pages))} '
+                             f'von {len(pages)}')
                 _require_review_turn(report, job)
                 batch = pages[offset:offset + job.config.review.pages_per_batch]
                 checked = _call_review(
@@ -495,6 +625,44 @@ def _inventory_sources(
             entries.extend(collected)
             uncertainties.extend(unresolved)
     return entries, uncertainties, source_visuals
+
+
+def _uncertainty_generation_instruction() -> str:
+    return ("\nUNSICHERE SCANSTELLEN: Schreibe eine plausible, als unsicher dokumentierte "
+            "Transkription in das PDF, statt [Scan unklar: ...] im sichtbaren Text. "
+            "Füge unmittelbar an derselben Stelle in main.tex einen Kommentar "
+            "`% [Scan unklar: Quelle/Seite/Aufgabe, Beschreibung]` hinzu. "
+            "Wenn nicht einmal eine plausible Lesart existiert, gib im Dokument '?' aus. "
+            "Keine unbelegten Sicherheitssignale und keine fachlichen Korrekturen. "
+            "Die separate uncertainties.md wird vom Orchestrator geschrieben.\n")
+
+
+def render_resume_prompt(job: ResolvedJob, prompt_dir: Path,
+                         *, source_uncertainties: list[str]) -> str:
+    """Fresh model/conversation/container, using bundled artifacts as authority."""
+    prompt = load_prompt(prompt_dir, 'resume-job.md')
+    prompt += ("\nDer neue Container hat keine alte Modellkonversation. "
+               "Die unveränderten Originale, task.md und das Quelleninventar "
+               "bleiben verbindlich.\nQuellunsicherheiten:\n" +
+               json.dumps(source_uncertainties, ensure_ascii=False))
+    return prompt
+
+
+def _render_source_visuals(job: ResolvedJob, directory: Path) -> list[tuple[str, Path]]:
+    visuals: list[tuple[str, Path]] = []
+    sources = [item for item in job.inputs if
+               item.role == InputRole.RECREATE or
+               (item.role in (InputRole.CONTENT, InputRole.STATEMENT) and
+                item.policy in (ContentPolicy.VERBATIM, ContentPolicy.IMMUTABLE))]
+    for number, item in enumerate(sources, 1):
+        if item.path.suffix.lower() == '.pdf':
+            pages = render_pages(item.path, directory / f'source-{number}',
+                                 max_pages=job.config.review.max_pages, scale=2.0)
+            visuals.extend((f'{item.relative_path}, Originalseite {i}', page)
+                           for i, page in enumerate(pages, 1))
+        elif item.path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+            visuals.append((f'{item.relative_path}, Originalbild', item.path))
+    return visuals
 
 
 def _sync_state(session: AgentSession, result_dir: Path) -> ArtifactState:
@@ -565,5 +733,14 @@ def _finish(report: RunReport, state: ArtifactState, report_path: Path) -> RunRe
     ):
         if path is not None and path.is_file():
             report.artifacts[name] = str(path)
+    if report.content_uncertainties or report.review_uncertainties:
+        unique = list(dict.fromkeys(report.content_uncertainties + report.review_uncertainties))
+        lines = ['# Unklare Stellen', '',
+                 'Diese Stellen sind nicht als originalgetreu bestätigt. '
+                 'Bitte Originalquelle und ConTeXt-Kommentare (`[Scan unklar:`) prüfen.', '']
+        lines.extend(f'- {item}' for item in unique)
+        (report_path.parent / 'uncertainties.md').write_text(
+            '\n'.join(lines) + '\n', encoding='utf-8')
+        report.artifacts['uncertainties.md'] = str(report_path.parent / 'uncertainties.md')
     write_report(report, report_path)
     return report

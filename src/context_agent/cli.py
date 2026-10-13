@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="einen Job ausführen")
     run_parser.add_argument("job", type=Path, help="Pfad zum Jobverzeichnis")
 
+    resume_parser = subparsers.add_parser("resume", help="Checkpoint-Job fortsetzen")
+    resume_parser.add_argument("job", type=Path, help="Pfad zum Jobverzeichnis")
+
     validate_parser = subparsers.add_parser("validate", help="Jobstruktur und YAML prüfen")
     validate_parser.add_argument("job", type=Path, help="Pfad zum Jobverzeichnis")
     return parser
@@ -37,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Eingaben: {len(job.inputs)}, Referenzen: {len(job.references)}")
             return 0
 
-        report = run_job(args.job)
+        report = run_job(args.job, resume=(args.command == "resume"))
         print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
         return 0 if report.status == "success" else 1
     except ContextAgentError as exc:

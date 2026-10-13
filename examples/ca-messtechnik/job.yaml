@@ -32,6 +32,7 @@ limits:
 
 review:
   reproduction: true
-  max_repairs: 3
+  max_content_repairs: 3
+  max_visual_repairs: 3
   max_pages: 60
   pages_per_batch: 2

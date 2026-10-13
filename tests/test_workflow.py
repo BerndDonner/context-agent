@@ -204,7 +204,7 @@ def test_reproduction_review_repairs_and_commits_includes(
     job_root = job_factory(tmp_path, max_turns=8)
     configure_reproduction_source(job_root)
     with (job_root / 'job.yaml').open('a') as f:
-        f.write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+        f.write('\nreview:\n  reproduction: true\n  max_content_repairs: 2\n  max_visual_repairs: 2\n')
     captured: dict[str, ReviewSession] = {}
 
     def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
@@ -226,7 +226,7 @@ def test_reproduction_fail_does_not_change_includes(
     configure_reproduction_source(job_root)
     (job_root / 'include/plotmod.lua').write_text('original')
     with (job_root / 'job.yaml').open('a') as f:
-        f.write('\nreview:\n  reproduction: true\n  max_repairs: 1\n')
+        f.write('\nreview:\n  reproduction: true\n  max_content_repairs: 1\n  max_visual_repairs: 1\n')
 
     class FailingSession(ReviewSession):
         def _write_pdf_and_log(self) -> None:
@@ -271,7 +271,7 @@ def test_remote_includes_not_applied_when_review_fails(
     configure_reproduction_source(job_root)
     (job_root / 'include/plotmod.lua').write_text('original')
     with (job_root / 'job.yaml').open('a') as f:
-        f.write('\nreview:\n  reproduction: true\n  max_repairs: 0\n')
+        f.write('\nreview:\n  reproduction: true\n  max_content_repairs: 0\n  max_visual_repairs: 0\n')
 
     class FailedIncludeSession(ReviewSession):
         def _write_pdf_and_log(self) -> None:
@@ -297,7 +297,7 @@ def test_reproduction_review_and_repair_obey_requested_scope(
         encoding='utf-8',
     )
     with (job_root / 'job.yaml').open('a') as stream:
-        stream.write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+        stream.write('\nreview:\n  reproduction: true\n  max_content_repairs: 2\n  max_visual_repairs: 2\n')
     prompts: list[str] = []
 
     class ScopeSession(ReviewSession):
@@ -329,7 +329,7 @@ def test_multibatch_review_defers_global_omission_check(
     configure_reproduction_source(job_root)
     (job_root / 'task.md').write_text('Reproduce all tasks and solutions from scan.')
     with (job_root / 'job.yaml').open('a') as stream:
-        stream.write('\nreview:\n  reproduction: true\n  pages_per_batch: 2\n  max_repairs: 0\n')
+        stream.write('\nreview:\n  reproduction: true\n  pages_per_batch: 2\n  max_content_repairs: 0\n  max_visual_repairs: 0\n')
     review_prompts: list[str] = []
 
     class MultiPageSession(FakeSession):
@@ -418,7 +418,7 @@ def test_content_mismatch_triggers_repair_then_visual_audit(
 ) -> None:  # type: ignore[no-untyped-def]
     root = job_factory(tmp_path, max_turns=12)
     configure_reproduction_source(root)
-    (root / 'job.yaml').open('a').write('\nreview:\n  reproduction: true\n  max_repairs: 2\n')
+    (root / 'job.yaml').open('a').write('\nreview:\n  reproduction: true\n  max_content_repairs: 2\n  max_visual_repairs: 2\n')
 
     class ContentRepairSession(ReviewSession):
         def __init__(self, job):  # type: ignore[no-untyped-def]
@@ -567,7 +567,7 @@ def test_visual_comparison_gets_original_scan_again_in_every_batch(
     config.write_text(config.read_text().replace(
         'input/notes.md\n    role: content\n    policy: guidance',
         'input/scan.pdf\n    role: recreate\n    policy: verbatim',
-    ) + '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_repairs: 0\n')
+    ) + '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_content_repairs: 0\n  max_visual_repairs: 0\n')
 
     class SourceAgainSession(ReviewSession):
         def __init__(self, job):  # type: ignore[no-untyped-def]
@@ -618,7 +618,7 @@ def test_missing_content_check_sees_all_output_pages_without_previous_context(
     root = job_factory(tmp_path, max_turns=12)
     configure_reproduction_source(root)
     (root / 'job.yaml').open('a').write(
-        '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_repairs: 0\n')
+        '\nreview:\n  reproduction: true\n  pages_per_batch: 1\n  max_content_repairs: 0\n  max_visual_repairs: 0\n')
 
     class MissingSession(FakeSession):
         def __init__(self, job):  # type: ignore[no-untyped-def]

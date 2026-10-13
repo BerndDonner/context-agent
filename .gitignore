@@ -27,3 +27,7 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# Resume staging and run history
+examples/*/.resume-work/
+examples/*/.run-history/

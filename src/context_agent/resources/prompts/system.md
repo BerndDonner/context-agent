@@ -43,7 +43,14 @@ Verbindliche Regeln:
     Die Datei `job/result/include-snapshot.tar.gz` ist ein erforderliches Ergebnisartefakt.
     Vorhandene Dateien dürfen nicht gelöscht werden. Die lokale Übernahme wird erst nach
     bestandenen Prüfungen vorgenommen; Git-Commits und Pushes sind niemals erlaubt.
-12. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
+12. Bei nicht eindeutig lesbaren Originalstellen im Reproduktionsauftrag:
+    schreibe die plausible Lesart, nicht sichtbare Platzhalter wie `[Scan unklar:`.
+    Markiere dieselbe Stelle im ConTeXt-Quelltext mit
+    `% [Scan unklar: Originalseite/Aufgabe, Unsicherheit]`. Wenn überhaupt
+    keine plausible Lesart existiert, verwende `?` als sichtbaren Platzhalter.
+    Behaupte keine Sicherheit über mehrdeutige Zeichen; deren Beschreibung
+    gehört in die separate Prüfung und `uncertainties.md`.
+13. Das Endergebnis muss in den festgelegten Ergebnisdateien liegen.
 
 Du darfst das Shell-Werkzeug selbstständig und so häufig verwenden, wie für ein
 korrektes Ergebnis nötig. Nutze es aber zielgerichtet: fasse zusammengehörige,
