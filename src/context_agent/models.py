@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class InputRole(StrEnum):
@@ -54,6 +54,21 @@ class LimitsSpec(BaseModel):
     max_output_tokens: int = Field(default=12000, ge=1000, le=100000)
 
 
+class ReasoningSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Omission means "use the selected model's own default".
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+
+
+class ProcessingSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # "auto" preserves historical behavior (API/project decides the service tier).
+    # "batch" is recognized explicitly so we can reject unsafe combinations.
+    mode: Literal["auto", "standard", "flex", "batch"] = "auto"
+
+
 class ReviewSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -69,6 +84,8 @@ class JobConfig(BaseModel):
 
     model: str
     task: str = "task.md"
+    reasoning: ReasoningSpec = Field(default_factory=ReasoningSpec)
+    processing: ProcessingSpec = Field(default_factory=ProcessingSpec)
     template: TemplateSpec
     inputs: list[InputSpec] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
@@ -76,6 +93,21 @@ class JobConfig(BaseModel):
     limits: LimitsSpec = Field(default_factory=LimitsSpec)
     review: ReviewSpec = Field(default_factory=ReviewSpec)
     nogo_directory: str | None = None
+
+    @model_validator(mode="after")
+    def reject_incompatible_batch(self) -> "JobConfig":
+        if self.model == "gpt-6.1-sol" and self.reasoning.effort in ("none", "minimal"):
+            raise ValueError(
+                "gpt-6.1-sol requires reasoning.effort low, medium, high, xhigh, or max"
+            )
+        if self.processing.mode == "batch":
+            raise ValueError(
+                "processing.mode=batch is not supported by the interactive Hosted-Shell "
+                "workflow (container lifetime and sequential repair/review turns). "
+                "Use processing.mode=flex for the same 50% token discount, or "
+                "processing.mode=standard for standard latency."
+            )
+        return self
 
     @field_validator("model", "task")
     @classmethod
@@ -177,6 +209,8 @@ class RunReport:
     status: str
     model: str
     started_at: datetime
+    reasoning_effort: str | None = None
+    processing_mode: str = "auto"
     finished_at: datetime | None = None
     agent_turns: int = 0
     nogo_repairs: int = 0
@@ -185,6 +219,7 @@ class RunReport:
     review_uncertainties: list[str] = field(default_factory=list)
     include_changes: list[str] = field(default_factory=list)
     response_ids: list[str] = field(default_factory=list)
+    observed_service_tiers: list[str] = field(default_factory=list)
     compile_success: bool = False
     findings: list[NogoFinding] = field(default_factory=list)
     checker_failures: list[NogoCheckerFailure] = field(default_factory=list)
@@ -203,6 +238,8 @@ class RunReport:
         return {
             "status": self.status,
             "model": self.model,
+            "reasoning_effort": self.reasoning_effort,
+            "processing_mode": self.processing_mode,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "agent_turns": self.agent_turns,
@@ -212,6 +249,7 @@ class RunReport:
             "review_uncertainties": self.review_uncertainties,
             "include_changes": self.include_changes,
             "response_ids": self.response_ids,
+            "observed_service_tiers": self.observed_service_tiers,
             "compile_success": self.compile_success,
             "findings": [finding.as_dict() for finding in self.findings],
             "checker_failures": [failure.as_dict() for failure in self.checker_failures],

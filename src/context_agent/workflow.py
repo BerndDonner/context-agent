@@ -66,6 +66,8 @@ def run_job(
         status="running",
         model=job.config.model,
         started_at=datetime.now(UTC),
+        reasoning_effort=job.config.reasoning.effort,
+        processing_mode=job.config.processing.mode,
     )
     report_path = job.result_dir / "report.json"
     transcript_path = job.result_dir / "transcript.jsonl"
@@ -252,6 +254,10 @@ def _call_turn(
     report.agent_turns += 1
     report.response_ids.append(turn.response_id)
     report.add_usage(turn.usage)
+    # The API may report the actual tier (e.g. priority for fast requests).
+    actual_tier = turn.raw.get("service_tier")
+    if isinstance(actual_tier, str) and actual_tier not in report.observed_service_tiers:
+        report.observed_service_tiers.append(actual_tier)
     append_transcript(
         transcript_path,
         turn_number=report.agent_turns,
@@ -269,6 +275,10 @@ def _call_review(
     report.agent_turns += 1
     report.response_ids.append(turn.response_id)
     report.add_usage(turn.usage)
+    # The API may report the actual tier (e.g. priority for fast requests).
+    actual_tier = turn.raw.get("service_tier")
+    if isinstance(actual_tier, str) and actual_tier not in report.observed_service_tiers:
+        report.observed_service_tiers.append(actual_tier)
     append_transcript(transcript_path, turn_number=report.agent_turns,
                       phase="review-reproduction", turn=turn)
     return turn

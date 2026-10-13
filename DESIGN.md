@@ -1,6 +1,6 @@
-# context-agent 0.2 — Design, Architektur und Übergabe
+# context-agent 0.3 — Design, Architektur und Übergabe
 
-**Status:** Implementierter Stand von Version 0.2
+**Status:** Implementierter Stand von Version 0.3
 **Zweck:** Dieses Dokument ist die maßgebliche Übergabeunterlage für `context-agent/`. Wird es
 in einer späteren Unterhaltung zusammen mit dem Quellcode bereitgestellt, sollen Ziele,
 Randbedingungen, Architektur und bewusste Nicht-Ziele ohne den ursprünglichen Gesprächsverlauf
@@ -69,7 +69,7 @@ Leitprinzipien:
 
 ### 3.1 Modellgesteuerter Agent
 
-Version 0.2 verwendet die agentischere Variante:
+Version 0.3 verwendet die agentischere Variante:
 
 > Das Modell arbeitet innerhalb einer frischen Hosted-Shell-Sandbox selbstständig. Es liest die
 > Dateien, richtet ConTeXt ein, erzeugt `main.tex`, kompiliert, untersucht Fehler und repariert
@@ -793,7 +793,7 @@ Python-SDKs.
 - API-Schlüssel werden nicht in YAML oder Projektdateien gespeichert; das offizielle SDK liest die
   normale Umgebungsvariable.
 
-Version 0.2 versucht nicht, bösartige eigene Templates oder bösartige eigene No-go-Skripte zu
+Version 0.3 versucht nicht, bösartige eigene Templates oder bösartige eigene No-go-Skripte zu
 sandboxen. Der Workflow ist für vom Anwender kontrollierte Jobs ausgelegt.
 
 ---
@@ -810,7 +810,7 @@ beauftragte Schritte sind:
 5. detailliertere PDF-Validierung,
 6. Aufbewahrung benannter Zwischenstände bei schwierigen Reparaturen.
 
-Diese Punkte sind nicht Bestandteil von Version 0.2.
+Diese Punkte sind nicht Bestandteil von Version 0.3.
 
 ---
 
@@ -909,3 +909,23 @@ Live-Test noch aus. Die lokalen Fake-Shell- und Reproduktions-Tests prüfen die
 Orchestratorlogik;
 die `plotmod-api.md`-Beispiele wurden unabhängig mit dem gelieferten ConTeXt-LMTX
 real kompiliert.
+
+
+## Modell- und Verarbeitungskonfiguration (ab Version 0.3, erweitert)
+
+Je Job werden `model`, optional `reasoning.effort` und optional
+`processing.mode` konfiguriert. Ohne neue Felder bleibt das frühere
+Verhalten unverändert. `reasoning.effort` geht bei **jedem** Responses-Aufruf
+inklusive Review/Reparatur mit, nicht nur beim ersten Agenten-Turn.
+
+`processing.mode` bietet `auto`, `standard` (`service_tier=default`)
+und `flex` (`service_tier=flex`). Flex ist **kein** Batch-API-Lauf,
+hat aber laut OpenAI 50 % günstigere Tokenpreise, ermöglicht die
+bestehende sequenzielle Agenten- und Reparaturschleife und kann
+langsamer bzw. zeitweise nicht verfügbar sein. Es erfolgt **kein**
+automatischer Wechsel zu Standard. Die echte asynchrone Batch API
+mit 24-Stunden-Fenster passt nicht zum kurzlebigen Hosted-Shell-
+Container und zur nötigen Abfolge mehrerer Requests. Deshalb wird
+die explizite Einstellung `processing.mode=batch` schon bei der
+Jobvalidierung abgelehnt, statt einen anderen Tarif vorzutäuschen.
+Container-/Toolkosten sind separat von Tokenpreisen zu betrachten.

@@ -186,6 +186,21 @@ class OpenAIHostedSession:
             "max_output_tokens": self.job.config.limits.max_output_tokens,
             "store": True,
         }
+        effort = self.job.config.reasoning.effort
+        if effort is not None:
+            kwargs["reasoning"] = {"effort": effort}
+        mode = self.job.config.processing.mode
+        if mode == "standard":
+            kwargs["service_tier"] = "default"
+        elif mode == "flex":
+            kwargs["service_tier"] = "flex"
+        elif mode == "batch":
+            # Validated at load time, but be defensive if a caller bypassed load_job.
+            raise RemoteAgentError(
+                "Batch API cannot safely run this interactive Hosted-Shell workflow. "
+                "Choose Flex for Batch-rate token pricing."
+            )
+
         if previous_response_id is not None:
             kwargs["previous_response_id"] = previous_response_id
 

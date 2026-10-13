@@ -191,3 +191,67 @@ def test_hosted_review_sends_images_but_disallows_shell(tmp_path: Path, job_fact
     assert request['input'][0]['content'][1] == {
         'type': 'input_image', 'file_id': 'file-page-1', 'detail': 'high',
     }
+
+
+def test_reasoning_and_flex_applied_to_initial_followup_and_review(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job_root = job_factory(tmp_path)
+    yaml_path = job_root / "job.yaml"
+    yaml_path.write_text(
+        yaml_path.read_text().replace(
+            "model: test-model",
+            "model: gpt-6.1-sol\nreasoning:\n  effort: high\nprocessing:\n  mode: flex",
+        )
+    )
+    job = load_job(job_root)
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.bundle_path = tmp_path / "bundle.tar.gz"
+    session.direct_files = ()
+    session.system_prompt = "system"
+    session.container_id = "container-1"
+    session._uploaded = []
+    session._client = FakeClient()
+    session._upload = lambda path: UploadedFile(path, "test-page-file")  # type: ignore[method-assign]
+
+    first = session.run_initial("initial")
+    second = session.run_followup("repair", first.response_id)
+    page = tmp_path / "page.png"
+    page.write_bytes(b"mock")
+    session.review_pages("review", second.response_id, (page,))
+    assert len(session._client.responses.calls) == 3
+    for request in session._client.responses.calls:
+        assert request["model"] == "gpt-6.1-sol"
+        assert request["reasoning"] == {"effort": "high"}
+        assert request["service_tier"] == "flex"
+    assert session._client.responses.calls[-1]["tool_choice"] == "none"
+
+
+def test_default_request_omits_reasoning_and_tier(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    job = load_job(job_factory(tmp_path))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.direct_files = ()
+    session.system_prompt = "system"
+    session.container_id = "container-1"
+    session._uploaded = []
+    session._client = FakeClient()
+    session.run_initial("test")
+    request = session._client.responses.calls[0]
+    assert "reasoning" not in request
+    assert "service_tier" not in request
+
+
+def test_standard_tier_is_explicit(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
+    root = job_factory(tmp_path)
+    job_yaml = root / "job.yaml"
+    job_yaml.write_text(job_yaml.read_text() + "\nprocessing:\n  mode: standard\n")
+    job = load_job(root)
+    session = object.__new__(OpenAIHostedSession)
+    session.job = job
+    session.direct_files = ()
+    session.system_prompt = "system"
+    session.container_id = "container-1"
+    session._uploaded = []
+    session._client = FakeClient()
+    session.run_initial("test")
+    assert session._client.responses.calls[0]["service_tier"] == "default"

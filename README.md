@@ -1,4 +1,4 @@
-# context-agent 0.2
+# context-agent 0.3
 
 `context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
 Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
@@ -11,7 +11,7 @@ No-go-Prüfung und sendet konkrete Befunde zur Reparatur an denselben Agenten zu
 
 Die verbindlichen Designentscheidungen stehen in [`DESIGN.md`](DESIGN.md).
 
-## Umfang von Version 0.2
+## Umfang von Version 0.3
 
 Enthalten sind:
 
@@ -91,7 +91,16 @@ mein-job/
 ## Minimales `job.yaml`
 
 ```yaml
-model: YOUR_MODEL_ID
+model: gpt-6.1-sol
+
+# Optional: omitting this uses the model's default reasoning effort.
+reasoning:
+  effort: high
+
+# auto (default), standard, or flex. True Batch is not supported
+# by this short-lived, multi-turn Hosted-Shell workflow.
+processing:
+  mode: flex
 
 task: task.md
 
@@ -124,6 +133,41 @@ review:
   max_pages: 40
   pages_per_batch: 4
 ```
+
+### Modell, Reasoning und Verarbeitungstarif
+
+`model` bleibt frei konfigurierbar (z. B. `gpt-6.1-sol`). Neue optionale Felder:
+
+```yaml
+model: gpt-6.1-sol
+reasoning:
+  effort: high
+processing:
+  mode: flex
+```
+
+- `reasoning.effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+  Welche Stufen erlaubt sind, hängt vom Modell ab: **GPT-6.1 Sol akzeptiert
+  `low`, `medium`, `high`, `xhigh`, `max`.** Der Agent sendet nur dann den
+  `reasoning`-Parameter, wenn er ausdrücklich gesetzt ist. Er gilt für
+  Generierung, Reparatur und Reproduktionsreview gleichermaßen.
+- `processing.mode: auto` (Standard): wie bisher wird der API-/Projektstandard
+  verwendet. `standard` erzwingt `service_tier: default`;
+  `flex` setzt `service_tier: flex` für **Batch-Tarife (50 % weniger
+  Tokenkosten)** bei normaler, synchroner Responses-API-Orchestrierung.
+  Flex kann deutlich langsamer sein oder wegen Kapazitätsmangels fehlschlagen.
+  Der Agent wechselt **nicht automatisch** auf einen teureren Tarif.
+- `processing.mode: batch` wird bewusst mit einem klaren Validierungsfehler
+  abgewiesen: Die echte Batch API ist asynchron (bis 24 h) und passt nicht
+  zum kurzlebigen Hosted-Shell-Container und zur sequentiellen Reparatur- und
+  Review-Schleife. Das wäre eine eigene persistente Job-/Wiederaufnahme-Architektur.
+  **Flex ist keine Batch API**, bietet aber dieselben reduzierten Tokenpreise.
+
+Die tatsächlichen Verarbeitungspreise gelten laut aktueller OpenAI-Dokumentation
+modell- und tarifabhängig; Hosted-Container- und sonstige Toolkosten sind nicht
+notwendigerweise um 50 % reduziert. Ohne `reasoning`/`processing` funktionieren
+alte `job.yaml`-Dateien unverändert. `report.json` protokolliert beide Einstellungen sowie von der API
+beobachtete Service-Tiers, sofern diese in der Antwort stehen.
 
 ### Rollen
 
@@ -206,7 +250,7 @@ abgenommenen Job und `2` bei ungültiger Konfiguration.
 
 ## No-go-Checker
 
-Version 0.2 führt weiterhin alle alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
+Version 0.3 führt weiterhin alle alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
 `nogo_directory` wird zuerst `job/nogos/` und anschließend ein projektweites `nogos/`
 gesucht. Das mitgelieferte Verzeichnis ist absichtlich leer.
 
