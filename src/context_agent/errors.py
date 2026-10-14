@@ -14,5 +14,5 @@ class ArtifactError(ContextAgentError):
     """Expected output artifacts could not be retrieved."""
 
 
-class NogoError(ContextAgentError):
+class QualityRuleError(ContextAgentError):
     """A no-go checker could not be loaded or executed."""

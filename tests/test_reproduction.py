@@ -7,7 +7,7 @@ import pytest
 
 from context_agent.errors import ArtifactError
 from context_agent.job import load_job
-from context_agent.models import NogoFinding
+from context_agent.models import QualityFinding
 from context_agent.reproduction import (
     parse_review, render_pages, repair_prompt, reproduction_scope, review_prompt,
 )
@@ -68,7 +68,7 @@ def test_job_scope_controls_subset_and_preserves_included_solutions(
     assert 'Original- und Ausgabebilder' in prompt
     assert 'früheren Modellkontext' in review_prompt(5, 5, 5, last=True, scope=scope)
     fixes = repair_prompt(
-        [NogoFinding(rule_id='reproduction-content', message='Aufgabe 4 unvollständig')],
+        [QualityFinding(rule_id='reproduction-content', message='Aufgabe 4 unvollständig')],
         scope=scope,
     )
     assert 'Nur Aufgaben 3 bis 5' in fixes

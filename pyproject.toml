@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-agent"
-version = "0.7.0"
+version = "0.8.0"
 description = "Small agentic workflow for generating and compiling ConTeXt documents"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -38,7 +38,9 @@ context_agent = [
   "resources/runtime/*.sh",
   "resources/runtime/*.tex",
   "resources/runtime/*.py",
-  "resources/nogos/*.py",
+  "resources/quality_rules/*/*.yaml",
+  "resources/quality_rules/*/*.py",
+  "resources/quality_rules/*/resources/*.tex",
 ]
 
 [tool.pytest.ini_options]

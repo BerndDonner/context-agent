@@ -25,7 +25,7 @@ runtime:
 
 limits:
   max_agent_turns: 18
-  max_nogo_repairs: 3
+  max_quality_repairs: 3
   timeout_seconds: 900
   max_output_tokens: 12000
 
@@ -35,3 +35,6 @@ review:
   max_visual_repairs: 2
   max_pages: 8
   pages_per_batch: 4
+
+quality:
+  - dollar_math

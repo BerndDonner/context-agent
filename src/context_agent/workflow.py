@@ -23,12 +23,15 @@ from context_agent.models import (
     ContentPolicy,
     InputRole,
     ArtifactState,
-    NogoCheckerFailure,
-    NogoFinding,
+    CheckerFailure,
+    QualityFinding,
     ResolvedJob,
     RunReport,
 )
-from context_agent.nogos import NogoContext, findings_as_prompt, load_checkers, run_checkers
+from context_agent.quality_rules import (QualityContext, findings_as_prompt, load_rules, run_checkers,
+                                        check_edits, Edit)
+from context_agent.quality_preflight import Preflight, llm_preflight
+from context_agent.requirements import prompt as requirements_prompt, parse_result as parse_requirements
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
 from context_agent.progress import Progress
 from context_agent.scan_markers import visible_scan_markers
@@ -61,13 +64,23 @@ def run_job(
     prompt_directory: Path | None = None,
     runtime_directory: Path | None = None,
     resume: bool = False,
+    preflight_factory: Preflight | None = None,
 ) -> RunReport:
-    """Run one complete generation and no-go repair workflow.
+    """Run generation and independently validated quality-rule refinements.
 
     The function deliberately keeps the outer workflow small. The hosted model is responsible
     for inspecting files, compiling ConTeXt, and repairing compiler failures inside its sandbox.
     """
     original_job = load_job(job_directory)
+    rules = load_rules(original_job)
+    # Strict preflight BEFORE deleting or replacing any prior result.
+    consistency = (preflight_factory or llm_preflight)(original_job, rules)
+    if consistency.get('status') != 'passed':
+        problems = consistency.get('conflicts', [])
+        raise ContextAgentError('Quality/requirement preflight blocked execution: ' +
+                                json.dumps(problems, ensure_ascii=False))
+    selected = tuple(rule.id for rule in rules)
+    plan = consistency['plan']
     progress = Progress()
     stored: dict | None = None
     stage = original_job.root / '.resume-work'
@@ -104,6 +117,11 @@ def run_job(
         reasoning_effort=job.config.reasoning.effort,
         processing_mode=job.config.processing.mode,
     )
+    report.consistency = {key:value for key,value in consistency.items() if key != 'usage'}
+    report.quality_plan = plan
+    if isinstance(consistency.get('usage'), dict):
+        report.agent_turns += 1
+        report.add_usage(consistency['usage'], phase='consistency-preflight')
     report_path = job.result_dir / "report.json"
     transcript_path = job.result_dir / "transcript.jsonl"
     session: AgentSession | None = None
@@ -114,15 +132,17 @@ def run_job(
     if stored:
         report.source_inventory = list(stored.get('source_inventory', []))
         report.review_history = list(stored.get('review_history', []))
+        report.quality_journal = list((stored.get('report') or {}).get('quality_journal', []))
+        report.requirements_checks = list((stored.get('report') or {}).get('requirements_checks', []))
         # A new attempt gets a new repair budget, but historical totals remain visible.
         old_report = stored.get('report') or {}
-        report.nogo_repairs = int(old_report.get('nogo_repairs', 0))
+        report.quality_repairs = int(old_report.get('quality_repairs', 0))
         report.content_repairs = int(old_report.get('content_repairs', 0))
         report.visual_repairs = int(old_report.get('visual_repairs', 0))
         report.review_repairs = report.content_repairs + report.visual_repairs
         for name in ('findings', 'content_findings', 'review_findings'):
             values = old_report.get(name, [])
-            setattr(report, name, [NogoFinding(**value) for value in values])
+            setattr(report, name, [QualityFinding(**value) for value in values])
         report.content_uncertainties = list(old_report.get('content_uncertainties', []))
         report.review_uncertainties = list(old_report.get('review_uncertainties', []))
 
@@ -174,9 +194,32 @@ def run_job(
         with tempfile.TemporaryDirectory(prefix="context-agent-") as temporary:
             bundle_path = Path(temporary) / "context-agent-job.tar.gz"
             build_job_bundle(job, bundle_path, runtime_dir,
-                             resume_result=(job.result_dir if resume else None))
+                             resume_result=(job.result_dir if resume else None), rules=rules)
             direct_files = direct_model_files(job)
             system_prompt = load_prompt(prompt_dir, "system.md")
+            rule_instructions = '\n\n'.join(rule.llm_description() for rule in rules)
+            if rule_instructions:
+                system_prompt += ('\n\nAUSSCHLIESSLICH FÜR DIESEN JOB AUSGEWÄHLTE QUALITÄTSREGELN:\n'
+                                  + rule_instructions)
+            registered_resources = {}
+            for rule in rules:
+                for resource in rule.resources:
+                    if resource.target in registered_resources:
+                        continue
+                    registered_resources[resource.target] = resource
+                    source = job.template_path.read_text(encoding='utf-8')
+                    already_defined = (f'\\def{resource.macro}' in source or
+                                       any(f'\\def{resource.macro}' in file.read_text(
+                                           encoding='utf-8',errors='replace')
+                                           for file in job.include_dir.rglob('*.tex')))
+                    if not already_defined:
+                        system_prompt += (f'\n\nHilfsmakro {resource.macro} ist als technische '
+                            f'Ressource {resource.target} verfügbar. Falls benötigt, '
+                            f'binde es genau einmal mit \\input {resource.include} ein. '
+                            'Das verbindliche Schul-Template bleibt unverändert.\n')
+            initial_quality = ('\n\nAUSGEWÄHLTE QUALITÄTSREGELN UND LLM-PLAN:\n'
+                               + rule_instructions + '\nBatches: '
+                               + json.dumps(plan, ensure_ascii=False))
             progress('Hosted-Container wird vorbereitet')
             session = session_factory(job, bundle_path, direct_files, system_prompt)
             report.remote_container_id = session.container_id
@@ -214,7 +257,7 @@ def run_job(
             else:
                 if not _may_turn(report, job):
                     raise ContextAgentError('Quelleninventar verbrauchte alle Agentenrunden')
-                initial_prompt = render_initial_prompt(job, prompt_dir)
+                initial_prompt = render_initial_prompt(job, prompt_dir) + initial_quality
                 if job.config.review.reproduction:
                     initial_prompt += ("\n\nVORAB ERSTELLTES QUELLENINVENTAR:\n" +
                                        json.dumps(report.source_inventory, ensure_ascii=False) +
@@ -265,79 +308,88 @@ def run_job(
                 report.status = "failed"
                 return finish(state)
 
-            checkers, load_failures = load_checkers(job.nogo_directory)
-            report.checker_failures.extend(load_failures)
-            if load_failures:
-                report.errors.append("One or more no-go checkers could not be loaded.")
-
-            nogo_repairs = 0
+            quality_repairs = 0
             content_repairs = 0
             visual_repairs = 0
-            while not report.checker_failures:
-                progress('Lokale No-go-Prüfung gestartet')
-                assert state.main_tex is not None
-                assert state.include_snapshot is not None
-                # Review helpers from the *same* sandbox snapshot as main.tex.
-                remote_files = read_include_snapshot(state.include_snapshot)
-                include_transaction.changes(remote_files)  # validate before reviewing
-                with tempfile.TemporaryDirectory(prefix="context-agent-check-includes-") as stage:
-                    include_stage = Path(stage) / "include"
-                    for relative, data in remote_files.items():
-                        target = include_stage / relative
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_bytes(data)
-                    def remote_lint(name: str) -> list[NogoFinding]:
-                        if name != "dollar_math":
-                            raise ContextAgentError(f"unknown remote linter: {name}")
-                        if not _may_turn(report, job):
-                            raise ContextAgentError("not enough agent turns for dynamic ConTeXt lint")
-                        progress('Dynamischer ConTeXt-Lint im Hosted-Container gestartet')
-                        payload, turn = session.run_dollar_lint(
-                            max_api_calls=job.config.limits.max_agent_turns - report.agent_turns)
-                        report.agent_turns += turn.api_calls
-                        report.response_ids.extend(turn.raw.get('response_ids', [turn.response_id]))
-                        report.add_usage(turn.usage, phase='nogo-dollar-lint', raw=turn.raw)
-                        append_transcript(transcript_path, turn_number=report.agent_turns,
-                                          phase='nogo-dollar-lint', turn=turn)
-                        findings = [NogoFinding(**item) for item in payload['findings']]
-                        progress(f'Dynamischer ConTeXt-Lint: {len(findings)} Befunde')
-                        return findings
-
-                    context = NogoContext(
-                        job=job,
-                        main_tex=state.main_tex,
-                        main_pdf=state.main_pdf,
-                        context_log=state.context_log,
-                        include_override=include_stage,
-                        remote_lint=remote_lint,
-                    )
-                    findings, runtime_failures = run_checkers(checkers, context)
-                    if job.config.review.reproduction:
-                        findings.extend(visible_scan_markers(state.main_tex))
-                report.checker_failures.extend(runtime_failures)
-                report.findings = findings
-                if runtime_failures:
-                    report.errors.append("One or more no-go checkers failed during execution.")
+            quality_seen: set[str] = set()
+            last_validated = job.result_dir / '.validated'
+            was_quality_repair = False
+            pending_quality_batch: list[str] = []
+            baseline_quality_counts: dict[str,int] = {}
+            while True:
+                if _missing_artifacts(state):
+                    report.errors.append('Required artifacts were lost after repair')
+                    report.status = 'failed'
                     break
-                if findings:
-                    progress(f'No-go-Prüfung: {len(findings)} Verstöße')
-                    if nogo_repairs >= job.config.limits.max_nogo_repairs or not _may_turn(report, job):
-                        break
-                    nogo_repairs += 1
-                    report.nogo_repairs = nogo_repairs
-                    state = repair(findings_as_prompt(findings),
-                                   f'repair-nogos-{nogo_repairs}')
-                    if _missing_artifacts(state):
-                        report.errors.append("A no-go repair destroyed required artifacts.")
-                        break
-                    continue
-
-                progress('Lokale No-go-Prüfung bestanden')
                 report.review_findings = []
                 report.review_uncertainties = []
                 report.content_findings = []
                 report.content_uncertainties = []
-                if job.config.review.reproduction:
+                # Requirements are always reviewed BEFORE quality and after every
+                # refinement. Non-reproduction jobs use an independent audit too.
+                if not job.config.review.reproduction:
+                    if not _may_turn(report, job):
+                        report.review_uncertainties.append('Budget exhausted before requirements validation')
+                        report.status = 'needs_review'
+                        break
+                    with tempfile.TemporaryDirectory(prefix='context-agent-requirements-') as td:
+                        try:
+                            pages = render_pages(state.main_pdf, Path(td),
+                                max_pages=job.config.review.max_pages)
+                        except Exception as exc:
+                            raise ContextAgentError(f'Unable to render generated PDF for requirements audit: {exc}') from exc
+                        all_findings = []
+                        all_uncertainties = []
+                        for offset in range(0, len(pages), job.config.review.pages_per_batch):
+                            _require_review_turn(report, job)
+                            batch = pages[offset:offset + job.config.review.pages_per_batch]
+                            prompt = requirements_prompt(job, state.main_tex, pages=len(pages))
+                            prompt += f'\nOutput pages {offset+1} through {offset+len(batch)} of {len(pages)}.'
+                            checked = _call_review(session=session, prompt=prompt,
+                                previous_response_id=None, pages=batch, report=report,
+                                transcript_path=transcript_path, phase='review-requirements')
+                            result = parse_requirements(checked.output_text)
+                            all_findings.extend(result.findings)
+                            all_uncertainties.extend(result.uncertainties)
+                            if result.status == 'uncertain' and not result.uncertainties:
+                                all_uncertainties.append('Requirements not verifiable with available evidence')
+                        report.content_findings = list(all_findings)
+                        report.content_uncertainties = list(all_uncertainties)
+                    report.requirements_checks.append({
+                        'phase': 'requirements',
+                        'source_sha256': _source_digest(state),
+                        'status': ('failed' if report.content_findings else
+                                   'uncertain' if report.content_uncertainties else 'passed'),
+                        'findings': [f.as_dict() for f in report.content_findings],
+                        'uncertainties': list(report.content_uncertainties),
+                    })
+                    checkpoint('requirements-reviewed')
+                    if report.content_findings:
+                        if was_quality_repair:
+                            _restore_validated(job.result_dir, last_validated)
+                            state = _artifact_state(job.result_dir)
+                            report.quality_journal.append({'event':'rollback',
+                                 'reason':'original requirements regressed'})
+                            report.status = 'needs_review'
+                            break
+                        if content_repairs >= job.config.review.max_content_repairs or not _may_turn(report, job):
+                            report.status = 'failed'
+                            break
+                        content_repairs += 1
+                        report.content_repairs += 1
+                        report.review_repairs += 1
+                        state = repair(findings_as_prompt(report.content_findings),
+                                       f'repair-requirements-{content_repairs}')
+                        continue
+                    if report.content_uncertainties:
+                        if was_quality_repair:
+                            _restore_validated(job.result_dir, last_validated)
+                            state = _artifact_state(job.result_dir)
+                            report.quality_journal.append({'event':'rollback',
+                                 'reason':'requirements verification uncertain'})
+                        report.status = 'needs_review'
+                        break
+                else:
                     report.content_uncertainties = list(source_uncertainties)
                     progress('Unabhängige Inhaltsprüfung gestartet')
 
@@ -345,7 +397,7 @@ def run_job(
                     with tempfile.TemporaryDirectory(prefix="context-agent-content-") as temporary:
                         output_pages = render_pages(state.main_pdf, Path(temporary),
                                                     max_pages=job.config.review.max_pages)
-                        content_findings: list[NogoFinding] = []
+                        content_findings: list[QualityFinding] = []
                         present: set[str] = set()
                         mismatched_ids: set[str] = set()
                         for offset in range(0, len(output_pages), job.config.review.pages_per_batch):
@@ -406,7 +458,7 @@ def run_job(
                             break
                         continue
                     progress('Unabhängige Sichtprüfung gestartet')
-                    review_findings: list[NogoFinding] = []
+                    review_findings: list[QualityFinding] = []
                     with tempfile.TemporaryDirectory(prefix="context-agent-review-") as temporary:
                         assert state.main_pdf is not None
                         pages = render_pages(state.main_pdf, Path(temporary),
@@ -454,21 +506,179 @@ def run_job(
                             report.errors.append("A reproduction repair destroyed required artifacts.")
                             break
                         continue
+                # A successful requirements check is the only accepted rollback baseline.
+                if report.review_uncertainties or report.content_uncertainties:
+                    report.status = 'needs_review'
+                    break
+                # A repaired state may not replace the rollback baseline until
+                # BOTH original requirements AND other selected rules pass.
+                if not was_quality_repair:
+                    _save_validated(job.result_dir, last_validated, report)
+                # Use one checker pass on the SAME main.tex/include snapshot.
+                if rules:
+                    assert state.main_tex is not None and state.include_snapshot is not None
+                    remote_files = read_include_snapshot(state.include_snapshot)
+                    include_transaction.changes(remote_files)
+                    with tempfile.TemporaryDirectory(prefix='context-agent-quality-includes-') as stage:
+                        include_stage = Path(stage) / 'include'
+                        for relative, data in remote_files.items():
+                            dst = include_stage / relative
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            dst.write_bytes(data)
+                        def remote_lint(name: str) -> list[QualityFinding]:
+                            if name != 'dollar_math':
+                                raise ContextAgentError(f'unknown dynamic lint: {name}')
+                            if not _may_turn(report, job):
+                                raise ContextAgentError('Not enough turns for dynamic ConTeXt lint')
+                            payload, turn = session.run_dollar_lint(
+                                max_api_calls=job.config.limits.max_agent_turns - report.agent_turns)
+                            report.agent_turns += turn.api_calls
+                            report.response_ids.extend(turn.raw.get('response_ids', [turn.response_id]))
+                            report.add_usage(turn.usage, phase='quality-dollar-lint', raw=turn.raw)
+                            append_transcript(transcript_path, turn_number=report.agent_turns,
+                                              phase='quality-dollar-lint', turn=turn)
+                            return [QualityFinding(**dict(item, rule_id='dollar_math'))
+                                    for item in payload['findings']]
+                        context = QualityContext(job, state.main_tex, state.main_pdf, state.context_log,
+                                                 include_stage, remote_lint)
+                        findings, failures = run_checkers(rules, context)
+                        if failures:
+                            report.checker_failures.extend(failures)
+                            report.status = 'failed'
+                            report.errors.append('Selected quality checker failed')
+                            break
+                        if job.config.review.reproduction:
+                            findings.extend(visible_scan_markers(state.main_tex))
+                        # The LLM performs one targeted semantic checker pass to cover
+                        # problems a conservative regex checker cannot prove or find.
+                        if _may_turn(report, job):
+                            review = _call_review_text(session=session,
+                                prompt=_quality_semantic_prompt(rules, state.main_tex, findings),
+                                previous_response_id=None, report=report,
+                                transcript_path=transcript_path, phase='quality-semantic-check')
+                            semantic, dismissed = _quality_semantic_findings(
+                                review.output_text, selected, len(findings))
+                            findings = [finding for index, finding in enumerate(findings)
+                                if index not in dismissed or finding.certainty == 'confirmed']
+                            findings.extend(semantic)
+                        else:
+                            report.review_uncertainties.append('No budget for semantic quality audit')
+                        report.findings = _deduplicate(findings)
+                        current_counts = _quality_counts(report.findings)
+                        if was_quality_repair:
+                            worsened = {rule: (baseline_quality_counts.get(rule,0), count)
+                                for rule, count in current_counts.items()
+                                if rule not in pending_quality_batch and
+                                   count > baseline_quality_counts.get(rule,0)}
+                            if worsened:
+                                _restore_validated(job.result_dir, last_validated)
+                                state = _artifact_state(job.result_dir)
+                                report.quality_journal.append({'event':'rollback',
+                                    'reason':'another selected rule regressed',
+                                    'worsened':worsened})
+                                report.status = 'needs_review'
+                                break
+                            report.quality_journal.append({'event':'regression_gate_passed',
+                                                   'source_sha256':_source_digest(state)})
+                            was_quality_repair = False
+                            pending_quality_batch = []
+                            _save_validated(job.result_dir, last_validated, report)
+                        if report.review_uncertainties:
+                            report.status = 'needs_review'
+                            break
+                        if report.findings:
+                            if quality_repairs >= job.config.limits.max_quality_repairs or not _may_turn(report, job):
+                                report.status = 'needs_review'
+                                break
+                            digest = _source_digest(state)
+                            if digest in quality_seen:
+                                report.status = 'needs_review'
+                                report.quality_journal.append({'event':'no_progress','source_sha256':digest})
+                                break
+                            quality_seen.add(digest)
+                            # Batch only rules selected by the LLM plan; do not
+                            # run new rules or blindly apply overlapping edits.
+                            pending_batch = next((batch for batch in plan if any(
+                                f.rule_id in batch for f in report.findings)), list(selected))
+                            batch_findings = [f for f in report.findings if f.rule_id in pending_batch]
+                            baseline_quality_counts = current_counts
+                            pending_quality_batch = pending_batch
+                            edits: list[Edit] = []
+                            for rule in rules:
+                                if rule.id in pending_batch and rule.propose_edits:
+                                    edits.extend(rule.propose_edits(context, batch_findings))
+                            if edits:
+                                try:
+                                    check_edits(state.main_tex.read_text(encoding='utf-8'), edits)
+                                except ValueError as exc:
+                                    report.quality_journal.append({'event':'edit_conflict','reason':str(exc)})
+                                    edits = []
+                            quality_repairs += 1
+                            report.quality_repairs += 1
+                            report.quality_journal.append({'event':'attempt',
+                                 'source_sha256':digest, 'batch':pending_batch,
+                                 'findings':[f.as_dict() for f in batch_findings],
+                                 'edits':[e.as_dict() for e in edits]})
+                            if edits and hasattr(session, 'apply_quality_edits'):
+                                progress(f'{len(edits)} atomare Autofixes: {pending_batch}')
+                                try:
+                                    turn = session.apply_quality_edits(
+                                        [e.as_dict() for e in edits],
+                                        max_api_calls=job.config.limits.max_agent_turns-report.agent_turns)
+                                    report.agent_turns += turn.api_calls
+                                    report.response_ids.extend(turn.raw.get('response_ids', [turn.response_id]))
+                                    report.add_usage(turn.usage, phase='quality-autofix', raw=turn.raw)
+                                    append_transcript(transcript_path, turn_number=report.agent_turns,
+                                                      phase='quality-autofix', turn=turn)
+                                    state = _sync_state(session, job.result_dir)
+                                except Exception as exc:
+                                    _restore_validated(job.result_dir, last_validated)
+                                    state = _artifact_state(job.result_dir)
+                                    report.quality_journal.append({'event':'rollback', 'reason':str(exc)})
+                                    report.status = 'needs_review'
+                                    break
+                            else:
+                                prompt = findings_as_prompt(batch_findings, rules)
+                                prompt += '\nVom LLM geplanter Batch: ' + ', '.join(pending_batch)
+                                state = repair(prompt, f'refine-{quality_repairs}')
+                            if _missing_artifacts(state):
+                                _restore_validated(job.result_dir, last_validated)
+                                state = _artifact_state(job.result_dir)
+                                report.quality_journal.append({'event':'rollback',
+                                     'reason':'repair did not compile or lost artifacts'})
+                                report.status = 'needs_review'
+                                break
+                            if _source_digest(state) == digest:
+                                _restore_validated(job.result_dir, last_validated)
+                                state = _artifact_state(job.result_dir)
+                                report.quality_journal.append({'event':'rollback',
+                                     'reason':'quality repair made no effective source/include change'})
+                                report.status = 'needs_review'
+                                break
+                            was_quality_repair = True
+                            checkpoint('quality-repaired-unvalidated')
+                            continue
+                if not rules:
+                    _save_validated(job.result_dir, last_validated, report)
+                # No selected-rule violations remain.
                 # Uncertainty is NOT proof of fidelity. Do not change Git files.
                 if report.review_uncertainties or report.content_uncertainties:
                     progress('Offene Quellunsicherheiten: manuelle Prüfung erforderlich')
                     report.status = "needs_review"
                     break
                 # Do not touch Git working files before all checks succeeded.
-                report.include_changes = include_transaction.apply(remote_files)
+                assert state.include_snapshot is not None
+                accepted_includes = read_include_snapshot(state.include_snapshot)
+                report.include_changes = include_transaction.apply(accepted_includes)
                 report.status = "success"
                 break
 
             report.compile_success = not _missing_artifacts(state)
-            if report.status not in ("success", "needs_review"):
+            if report.status not in ("success", "needs_review", "failed"):
                 report.status = "failed"
+            if report.status != 'success':
                 if report.findings:
-                    report.errors.append(f"{len(report.findings)} no-go finding(s) remain.")
+                    report.errors.append(f"{len(report.findings)} quality finding(s) remain.")
                 if report.review_findings:
                     report.errors.append(
                         f"{len(report.review_findings)} reproduction finding(s) remain.")
@@ -476,7 +686,7 @@ def run_job(
                     report.errors.append(
                         f"{len(report.content_findings)} content finding(s) remain.")
                 if report.checker_failures:
-                    report.errors.append("No-go checker failure prevents acceptance.")
+                    report.errors.append("Quality checker failure prevents acceptance.")
 
             return finish(state)
 
@@ -492,6 +702,110 @@ def run_job(
     finally:
         if session is not None:
             session.close()
+
+
+
+def _source_digest(state: ArtifactState) -> str:
+    import hashlib
+    assert state.main_tex is not None and state.include_snapshot is not None
+    sha = hashlib.sha256()
+    for file in (state.main_tex, state.include_snapshot):
+        sha.update(file.read_bytes())
+    return sha.hexdigest()
+
+
+def _save_validated(result_dir: Path, snapshot: Path, report: RunReport) -> None:
+    import hashlib
+    snapshot.mkdir(exist_ok=True)
+    files = ('main.tex','main.pdf','context.log','include-snapshot.tar.gz')
+    hashes = {}
+    for name in files:
+        data = (result_dir / name).read_bytes()
+        hashes[name] = hashlib.sha256(data).hexdigest()
+        (snapshot / name).write_bytes(data)
+    (snapshot / 'validation.json').write_text(json.dumps({
+         'files':hashes, 'requirements': report.requirements_checks[-1:]
+         if report.requirements_checks else report.review_history[-2:],
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def _restore_validated(result_dir: Path, snapshot: Path) -> None:
+    if not (snapshot / 'validation.json').is_file():
+        raise ContextAgentError('no requirements-validated rollback snapshot')
+    data=json.loads((snapshot / 'validation.json').read_text(encoding='utf-8'))
+    import hashlib
+    for name, expected in data['files'].items():
+        source=snapshot / name
+        if hashlib.sha256(source.read_bytes()).hexdigest() != expected:
+            raise ContextAgentError(f'validated snapshot corrupted: {name}')
+    for name in data['files']:
+        shutil.copy2(snapshot / name, result_dir / name)
+
+
+def _quality_counts(findings: list[QualityFinding]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        counts[finding.rule_id] = counts.get(finding.rule_id, 0) + 1
+    return counts
+
+
+def _quality_semantic_prompt(rules, source: Path,
+                             candidates: list[QualityFinding]) -> str:
+    return ("Unabhängige QUALITÄTSPRÜFUNG auf dem Satzquelltext. "
+            "Nutze ausschließlich die explizit ausgewählten Regeln. "
+            "Die Python-Erkennung liefert unten nummerierte Kandidaten, KEINE "
+            "automatisch sicheren Verstöße. Prüfe sie im Kontext und "
+            "dismisse nachweislich harmlose Kandidaten anhand des 0-basierten Index. "
+            "Füge ggf. weitere semantische Befunde hinzu. "
+            "Kein Quellcodewechsel, keine Shell. Keine zusätzlichen Regeln aktivieren. "
+            "Nur belegbare Befunde; unklare Dinge bleiben Warnungen. "
+            "JSON ohne Markdown: {\"findings\":[{\"rule_id\":\"id\", "
+            "\"message\":\"...\",\"certainty\":\"confirmed|candidate|warning\", "
+            "\"severity\":\"error|warning\",\"line\":12}], "
+            "\"dismissed_candidates\":[0],\"uncertainties\":[]}.\n"
+            + '\n'.join(r.llm_description() for r in rules)
+            + '\nPYTHON-KANDIDATEN (0-basiert):\n'
+            + json.dumps([f.as_dict() for f in candidates], ensure_ascii=False)
+            + '\nQUELLTEXT:\n' + source.read_text(encoding='utf-8')[:100000])
+
+
+def _quality_semantic_findings(output: str, selected: tuple[str, ...],
+                               candidate_count: int) -> tuple[list[QualityFinding], set[int]]:
+    import re
+    value = output.strip()
+    if value.startswith('```'):
+        value = re.sub(r'^```(?:json)?\s*|\s*```$', '', value)
+    try:
+        data = json.loads(value)
+    except ValueError as exc:
+        raise ContextAgentError('semantic quality checker returned invalid JSON') from exc
+    if not isinstance(data, dict) or not isinstance(data.get('findings'),list) or not isinstance(data.get('uncertainties'),list):
+        raise ContextAgentError('malformed semantic quality report')
+    dismissed = data.get('dismissed_candidates', [])
+    if not isinstance(dismissed,list) or any(type(i) is not int or i < 0 or i >= candidate_count for i in dismissed):
+        raise ContextAgentError('quality audit attempted invalid candidate dismissal')
+    findings = []
+    for item in data['findings']:
+        if not isinstance(item,dict) or item.get('rule_id') not in selected or not isinstance(item.get('message'),str):
+            raise ContextAgentError('semantic checker returned an unselected rule')
+        if item.get('certainty') not in ('confirmed','candidate','warning') or item.get('severity') not in ('error','warning'):
+            raise ContextAgentError('semantic checker returned invalid finding classification')
+        findings.append(QualityFinding(item['rule_id'],item['message'],
+              file='main.tex',line=item.get('line') if isinstance(item.get('line'),int) else None,
+              certainty=item['certainty'],severity=item['severity']))
+    for uncertainty in data['uncertainties']:
+        if isinstance(uncertainty,str):
+            findings.append(QualityFinding(selected[0], uncertainty,
+                                           certainty='warning',severity='warning'))
+    return findings, set(dismissed)
+
+
+def _deduplicate(findings: list[QualityFinding]) -> list[QualityFinding]:
+    unique={}
+    for finding in findings:
+        key=(finding.rule_id, finding.file, finding.line, finding.message)
+        unique[key]=finding
+    return list(unique.values())
 
 
 def _call_turn(

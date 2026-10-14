@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from context_agent.models import NogoFinding
+from context_agent.models import QualityFinding
 
 _MARKER = re.compile(r'\[(?:Scan unklar:|Index unklar\])')
 
 
-def visible_scan_markers(main_tex: Path) -> list[NogoFinding]:
-    findings: list[NogoFinding] = []
+def visible_scan_markers(main_tex: Path) -> list[QualityFinding]:
+    findings: list[QualityFinding] = []
     verbatim = False
     for line_no, line in enumerate(main_tex.read_text(encoding='utf-8').splitlines(), 1):
         stripped = line.lstrip()
@@ -24,7 +24,7 @@ def visible_scan_markers(main_tex: Path) -> list[NogoFinding]:
         # Respect escaped percent signs, but not ordinary comment tails.
         content = re.split(r'(?<!\\)%', line, maxsplit=1)[0]
         if _MARKER.search(content):
-            findings.append(NogoFinding(
+            findings.append(QualityFinding(
                 rule_id='visible-scan-uncertainty',
                 message='Unklarer Scan ist als redaktioneller Platzhalter im sichtbaren PDF-Text',
                 file='main.tex', line=line_no,

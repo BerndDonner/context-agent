@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from context_agent.errors import ArtifactError
-from context_agent.models import NogoFinding, ResolvedInput
+from context_agent.models import QualityFinding, ResolvedInput
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class InventoryEntry:
 @dataclass(frozen=True)
 class OutputCheck:
     present: frozenset[str]
-    findings: list[NogoFinding]
+    findings: list[QualityFinding]
     uncertainties: list[str]
     affected: frozenset[str]
 
@@ -140,7 +140,7 @@ def parse_output_check(text: str, *, entries: list[InventoryEntry],
     ids = {item.id: item for item in entries}
     if not all(isinstance(x, str) and x in ids for x in present):
         raise ArtifactError('content audit referenced unknown inventory ID')
-    findings: list[NogoFinding] = []
+    findings: list[QualityFinding] = []
     affected: set[str] = set()
     for mismatch in mismatches:
         if not isinstance(mismatch, dict):
@@ -158,7 +158,7 @@ def parse_output_check(text: str, *, entries: list[InventoryEntry],
         if confidence < 0.85:
             uncertainties.append(f'{item_id} ({reference.anchor}): {message}')
         else:
-            findings.append(NogoFinding(
+            findings.append(QualityFinding(
                 rule_id='content-mismatch',
                 file='main.pdf',
                 message=(f'{item_id}, Original {reference.source}, Seite '
@@ -186,7 +186,7 @@ JSON-Schema:
 '''
 
 
-def parse_missing(text: str, pending: list[InventoryEntry]) -> tuple[list[NogoFinding], list[str]]:
+def parse_missing(text: str, pending: list[InventoryEntry]) -> tuple[list[QualityFinding], list[str]]:
     data = _decode_json(text)
     missing, uncertainties = data.get('missing'), data.get('uncertainties')
     if (not isinstance(missing, list) or not isinstance(uncertainties, list)
@@ -194,7 +194,7 @@ def parse_missing(text: str, pending: list[InventoryEntry]) -> tuple[list[NogoFi
         raise ArtifactError('malformed missing-content review')
     ids = {item.id: item for item in pending}
     confirmed: set[str] = set()
-    findings: list[NogoFinding] = []
+    findings: list[QualityFinding] = []
     for finding in missing:
         if not isinstance(finding, dict):
             raise ArtifactError('malformed missing-content finding')
@@ -206,7 +206,7 @@ def parse_missing(text: str, pending: list[InventoryEntry]) -> tuple[list[NogoFi
         confirmed.add(item_id)
         entry = ids[item_id]
         if confidence >= 0.85:
-            findings.append(NogoFinding(
+            findings.append(QualityFinding(
                 rule_id='content-missing', file='main.pdf',
                 message=(f'{item_id} Original {entry.source}, Seite '
                          f'{entry.source_page} ({entry.anchor}): {message}'),

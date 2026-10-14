@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -49,7 +50,7 @@ class LimitsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_agent_turns: int = Field(default=12, ge=1, le=100)
-    max_nogo_repairs: int = Field(default=3, ge=0, le=20)
+    max_quality_repairs: int = Field(default=3, ge=0, le=20)
     timeout_seconds: int = Field(default=900, ge=60, le=3600)
     max_output_tokens: int = Field(default=12000, ge=1000, le=100000)
 
@@ -93,7 +94,8 @@ class JobConfig(BaseModel):
     runtime: RuntimeSpec
     limits: LimitsSpec = Field(default_factory=LimitsSpec)
     review: ReviewSpec = Field(default_factory=ReviewSpec)
-    nogo_directory: str | None = None
+    quality: list[str]
+    quality_directory: str | None = None
 
     @model_validator(mode="after")
     def reject_incompatible_batch(self) -> "JobConfig":
@@ -109,6 +111,13 @@ class JobConfig(BaseModel):
                 "processing.mode=standard for standard latency."
             )
         return self
+
+    @field_validator("quality")
+    @classmethod
+    def unique_quality(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)) or any(not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in value):
+            raise ValueError("quality contains duplicate or invalid rule IDs")
+        return value
 
     @field_validator("model", "task")
     @classmethod
@@ -139,16 +148,19 @@ class ResolvedJob:
     include_dir: Path
     result_dir: Path
     context_archive: Path
-    nogo_directory: Path | None
+    quality_directory: Path | None
 
 
 @dataclass(frozen=True)
-class NogoFinding:
+class QualityFinding:
     rule_id: str
     message: str
     file: str | None = None
     line: int | None = None
     repair_hint: str | None = None
+    confidence: float | None = None
+    certainty: Literal["confirmed", "candidate", "warning"] = "confirmed"
+    severity: Literal["error", "warning"] = "error"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -157,11 +169,14 @@ class NogoFinding:
             "file": self.file,
             "line": self.line,
             "repair_hint": self.repair_hint,
+            "confidence": self.confidence,
+            "certainty": self.certainty,
+            "severity": self.severity,
         }
 
 
 @dataclass(frozen=True)
-class NogoCheckerFailure:
+class CheckerFailure:
     checker: str
     message: str
     traceback: str
@@ -215,12 +230,16 @@ class RunReport:
     processing_mode: str = "auto"
     finished_at: datetime | None = None
     agent_turns: int = 0
-    nogo_repairs: int = 0
+    quality_repairs: int = 0
+    consistency: dict[str, Any] = field(default_factory=dict)
+    quality_plan: list[list[str]] = field(default_factory=list)
+    quality_journal: list[dict[str, Any]] = field(default_factory=list)
+    requirements_checks: list[dict[str, Any]] = field(default_factory=list)
     review_repairs: int = 0  # total content + visual repairs
     content_repairs: int = 0
     visual_repairs: int = 0
-    review_findings: list[NogoFinding] = field(default_factory=list)
-    content_findings: list[NogoFinding] = field(default_factory=list)
+    review_findings: list[QualityFinding] = field(default_factory=list)
+    content_findings: list[QualityFinding] = field(default_factory=list)
     content_uncertainties: list[str] = field(default_factory=list)
     review_history: list[dict[str, Any]] = field(default_factory=list)
     source_inventory: list[dict[str, Any]] = field(default_factory=list)
@@ -229,8 +248,8 @@ class RunReport:
     response_ids: list[str] = field(default_factory=list)
     observed_service_tiers: list[str] = field(default_factory=list)
     compile_success: bool = False
-    findings: list[NogoFinding] = field(default_factory=list)
-    checker_failures: list[NogoCheckerFailure] = field(default_factory=list)
+    findings: list[QualityFinding] = field(default_factory=list)
+    checker_failures: list[CheckerFailure] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     usage_by_phase: list[dict[str, Any]] = field(default_factory=list)
@@ -277,7 +296,11 @@ class RunReport:
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "agent_turns": self.agent_turns,
-            "nogo_repairs": self.nogo_repairs,
+            "quality_repairs": self.quality_repairs,
+            "consistency": self.consistency,
+            "quality_plan": self.quality_plan,
+            "quality_journal": self.quality_journal,
+            "requirements_checks": self.requirements_checks,
             "review_repairs": self.review_repairs,
             "content_repairs": self.content_repairs,
             "visual_repairs": self.visual_repairs,

@@ -91,13 +91,11 @@ def load_job(job_directory: Path) -> ResolvedJob:
     context_archive = _resolve_external(root, config.runtime.context_archive)
     _require_file(context_archive, "ConTeXt archive")
 
-    nogo_directory: Path | None
-    if config.nogo_directory:
-        nogo_directory = _resolve_external(root, config.nogo_directory)
-        if not nogo_directory.is_dir():
-            raise ConfigurationError(f"nogo_directory is not a directory: {nogo_directory}")
-    else:
-        nogo_directory = discover_nogo_directory(root)
+    quality_directory: Path | None = None
+    if config.quality_directory:
+        quality_directory = _resolve_external(root, config.quality_directory)
+        if not quality_directory.is_dir():
+            raise ConfigurationError(f"quality_directory does not exist: {quality_directory}")
 
     return ResolvedJob(
         root=root,
@@ -110,25 +108,8 @@ def load_job(job_directory: Path) -> ResolvedJob:
         include_dir=include_dir,
         result_dir=result_dir,
         context_archive=context_archive,
-        nogo_directory=nogo_directory,
+        quality_directory=quality_directory,
     )
-
-
-def discover_nogo_directory(job_root: Path) -> Path | None:
-    candidates: list[Path] = [job_root / "nogos", Path.cwd() / "nogos"]
-    candidates.extend(parent / "nogos" for parent in job_root.parents)
-    package_project_root = Path(__file__).resolve().parents[2]
-    candidates.append(package_project_root / "nogos")
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        if resolved.is_dir():
-            return resolved
-    return None
 
 
 def prepare_result_directory(result_dir: Path) -> None:

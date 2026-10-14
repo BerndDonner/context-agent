@@ -1,480 +1,107 @@
-# context-agent 0.7.0
+# context-agent 0.8 – ConTeXt-Dokumente mit expliziten Quality Rules
 
-`context-agent` ist ein kleiner Python-Orchestrator für einen modellgesteuerten Workflow zur
-Erstellung von **kompilierten ConTeXt-LMTX-Dokumenten**.
+`context-agent` erzeugt aus Aufgabe, verbindlichem Template und Eingabedokumenten eine kompilierte ConTeXt-LMTX-Fassung über die OpenAI Responses API mit Hosted Shell. Ziel ist eine möglichst hochwertige Ausgangsbasis für die manuelle Nachbearbeitung. Der Originalauftrag bleibt während aller Reparaturen der entscheidende Maßstab.
 
-Das Modell arbeitet in einem frischen, von der OpenAI Responses API bereitgestellten
-Shell-Container. Es erhält einen vollständigen Job, ein portables ConTeXt-Archiv und die
-zugehörigen PDFs/Bilder. Es richtet ConTeXt ein, erzeugt `main.tex`, kompiliert, liest Fehler und
-repariert das Dokument selbstständig. Der lokale Python-Code übernimmt anschließend die
-No-go-Prüfung und sendet konkrete Befunde zur Reparatur an denselben Agenten zurück.
+## Anforderungen
 
-Die verbindlichen Designentscheidungen stehen in [`DESIGN.md`](DESIGN.md).
-
-## Umfang von Version 0.4
-
-Enthalten sind:
-
-- vollständige Jobs als Verzeichnisse,
-- ein vollständiges ConTeXt-Dokument als Template,
-- Eingaben mit Rollen und Änderungsregeln,
-- direkte Übergabe aller konfigurierten Referenz-PDFs,
-- eine frische Hosted-Shell-Sandbox pro Lauf,
-- echtes ConTeXt-LMTX-Bootstrapping samt Smoke-Test,
-- agentische Compiler-Reparaturen,
-- beliebig komplexe lokale Python-No-go-Checker,
-- automatische No-go-Reparaturrunden,
-- optional aktivierbare **quellenbasierte Inhaltsinventarisierung und unabhängige
-  Vollständigkeitsprüfung** sowie getrennte visuelle Reproduktionsprüfung,
-  jeweils mit automatischer Reparaturschleife bei sicher belegten Fehlern,
-- `needs_review` statt uneingeschränktem Erfolg bei verbleibenden Unsicherheiten,
-- detaillierte Token-/Cache-/Shell-Metriken pro Runde und eine Prüf-Historie,
-- Git-kompatibler **Include-Roundtrip**: neue/geänderte Dateien in `include/` werden erst
-  nach erfolgreicher Abnahme zurückgeschrieben, ohne Commit oder Push,
-- `main.tex`, `main.pdf`, `context.log`, `include-snapshot.tar.gz`,
-  `report.json` und `transcript.jsonl`.
-
-Nicht enthalten sind typografische Optimierung, RAG, Vektordatenbank,
-Multi-Agent-System und eine Weboberfläche.
-
-## Installation
-
-Python 3.13 wird vorausgesetzt.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-```
-
-Für Entwicklung und Tests:
+Python ab 3.13, die in `pyproject.toml` genannten Abhängigkeiten, ein OpenAI-API-Key in `OPENAI_API_KEY` und ein für den Job angegebenes ConTeXt-LMTX-Archiv. Für lokale PDF-Prüfungen wird PyMuPDF verwendet. Der Hosted-Container führt den eigentlichen Satzlauf mit dem mitgelieferten flüchtigen Runner aus.
 
 ```bash
 python -m pip install -e '.[dev]'
+context-agent validate /pfad/zum/job
+context-agent run /pfad/zum/job
+context-agent resume /pfad/zum/job
 ```
 
-Der Agent erwartet den API-Schlüssel ausschließlich in der Umgebungsvariable
-`OPENAI_API_KEY`. In der Nix-DevShell wird sie über das zentrale Secret-Handling aus der
-gepinnten `NixOS-Config` geladen:
+`validate` prüft Struktur und YAML; die semantische Konsistenzprüfung findet erst bei `run` **vor** der Containererstellung und Ergebnislöschung statt. `resume` setzt einen unvollständigen Lauf in `.resume-work` fort. Bereits erfolgreich beendete Jobs sind nicht für `resume` vorgesehen.
 
-```nix
-secretSets = [ "openai" ];
-```
-
-Damit reicht im normalen Entwicklungsworkflow:
-
-```bash
-nix develop
-```
-
-Außerhalb der DevShell muss `OPENAI_API_KEY` vor dem Start auf anderem Weg in der
-Umgebung gesetzt werden. Der Agent liest keine Schlüsseldatei aus dem Repository.
-
-## Jobstruktur
+## Aufbau eines Jobs
 
 ```text
 mein-job/
 ├── job.yaml
 ├── task.md
-├── template/
-│   └── template.tex
-├── input/
-│   └── angabe.pdf
-├── include/
-│   ├── sabel.png
-│   ├── mymacros.mp
-│   └── plotmod.lua
-├── references/
-│   └── mathincontext-paper.pdf
-└── result/
+├── template/template.tex
+├── input/                # optionale unveränderliche Eingaben
+├── include/              # mitgelieferte Helfer
+└── result/               # PDF, TeX, Logs, Berichte, Checkpoints
 ```
 
-`include/` enthält bewusst sowohl Bilder als auch Codepakete.
-
-## Minimales `job.yaml`
+Minimalbeispiel (`runtime.context_archive` muss auf deinem System existieren):
 
 ```yaml
-model: gpt-6.1-sol
-
-# Optional: omitting this uses the model's default reasoning effort.
+model: gpt-6
 reasoning:
-  effort: high
-
-# auto (default), standard, or flex. True Batch is not supported
-# by this short-lived, multi-turn Hosted-Shell workflow.
+  effort: medium
 processing:
-  mode: flex
-
+  mode: standard
 task: task.md
-
 template:
   path: template/template.tex
-
-inputs:
-  - path: input/angabe.pdf
-    role: recreate
-    policy: verbatim
-
-references:
-  - references/mathincontext-paper.pdf
-
+inputs: []
+references: []
 runtime:
-  context_archive: /absoluter/pfad/context-lmtx-ready.tar.xz
-  memory_limit: 4g
-  keep_remote: false
-
+  context_archive: /pfad/context-lmtx-ready.tar.xz
 limits:
-  max_agent_turns: 24  # bei längeren Scans Platz für Inventar + Inhalt + Sichtprüfung
-  max_nogo_repairs: 3
-  timeout_seconds: 900
+  max_agent_turns: 24
+  max_quality_repairs: 3
   max_output_tokens: 12000
-
-# Nur für originalgetreue Reproduktionsaufträge einschalten.
+  timeout_seconds: 900
 review:
-  reproduction: true
-  max_content_repairs: 3
-  max_visual_repairs: 3
-  max_pages: 40
-  pages_per_batch: 4
+  reproduction: false
+  max_content_repairs: 2
+  max_visual_repairs: 2
+quality:
+  - dollar_math
+  - semantic_numbers
+  - semantic_math_text
+  - number_with_unit
+  - coordinate_reuse
 ```
 
-### Modell, Reasoning und Verarbeitungstarif
+**`quality` ist in jedem Job Pflicht**, auch `quality: []` ist zulässig. Es gibt keine Profile und keine automatische Auswahl anhand des Fachs oder Inhalts. Nur die von dir explizit angegebenen Regeln werden ausgeführt. `quality_directory` erlaubt ein zusätzliches Verzeichnis mit eigenen Regeln (nicht erforderlich für eingebaute Regeln).
 
-`model` bleibt frei konfigurierbar (z. B. `gpt-6.1-sol`). Neue optionale Felder:
+Ein Beispieljob für einen Mathematikauftrag darf `syntax-highlighting` natürlich weglassen. Die fünf gegenwärtig ausgelieferten IDs sind exakt die oben gezeigten. Zusätzliche Regeln können später in der gleichen Struktur erstellt und explizit ausgewählt werden.
 
-```yaml
-model: gpt-6.1-sol
-reasoning:
-  effort: high
-processing:
-  mode: flex
-```
+## Quality Rules
 
-- `reasoning.effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
-  Welche Stufen erlaubt sind, hängt vom Modell ab: **GPT-6.1 Sol akzeptiert
-  `low`, `medium`, `high`, `xhigh`, `max`.** Der Agent sendet nur dann den
-  `reasoning`-Parameter, wenn er ausdrücklich gesetzt ist. Er gilt für
-  Generierung, Reparatur und Reproduktionsreview gleichermaßen.
-- `processing.mode: auto` (Standard): wie bisher wird der API-/Projektstandard
-  verwendet. `standard` erzwingt `service_tier: default`;
-  `flex` setzt `service_tier: flex` für **Batch-Tarife (50 % weniger
-  Tokenkosten)** bei normaler, synchroner Responses-API-Orchestrierung.
-  Flex kann deutlich langsamer sein oder wegen Kapazitätsmangels fehlschlagen.
-  Der Agent wechselt **nicht automatisch** auf einen teureren Tarif.
-- `processing.mode: batch` wird bewusst mit einem klaren Validierungsfehler
-  abgewiesen: Die echte Batch API ist asynchron (bis 24 h) und passt nicht
-  zum kurzlebigen Hosted-Shell-Container und zur sequentiellen Reparatur- und
-  Review-Schleife. Das wäre eine eigene persistente Job-/Wiederaufnahme-Architektur.
-  **Flex ist keine Batch API**, bietet aber dieselben reduzierten Tokenpreise.
+Eine Regel besteht aus `rule.yaml`, einem optionalen lesenden `checker.py`, einem optionalen deterministischen `refinement.py` und möglichen Ressourcen. Existiert kein deterministischer Fixer, kann das Refinement mit den aus `rule.yaml` bereitgestellten Reparaturhinweisen durch das LLM ausgeführt werden. Checker-Meldungen sind `confirmed`, `candidate` oder `warning`; Warnkandidaten werden nicht als Beweis behandelt.
 
-Die tatsächlichen Verarbeitungspreise gelten laut aktueller OpenAI-Dokumentation
-modell- und tarifabhängig; Hosted-Container- und sonstige Toolkosten sind nicht
-notwendigerweise um 50 % reduziert. Ohne `reasoning`/`processing` funktionieren
-alte `job.yaml`-Dateien unverändert. `report.json` protokolliert beide Einstellungen sowie von der API
-beobachtete Service-Tiers, sofern diese in der Antwort stehen.
-
-### Rollen
-
-- `statement`: verbindliche Angabe, etwa als Quelle einer Musterlösung
-- `recreate`: als ConTeXt-Dokument neu zu setzende Vorlage
-- `content`: unmittelbar zu verwendender Inhalt
-- `reference`: zusätzliche fachliche oder gestalterische Quelle
-
-### Policies
-
-- `verbatim`: Wortlaut muss erhalten bleiben
-- `immutable`: fachliche Aussagen, Zahlen und Bedingungen bleiben unverändert
-- `editable`: redaktionelle Bearbeitung ist erlaubt
-- `guidance`: freie sinnvolle Ausarbeitung ist erlaubt
-
-### Verbindliche ConTeXt-Mathematik-Konvention (dynamischer Linter)
-
-Im ConTeXt-Dokument gelten `\m{...}` bzw. `\startformula ... \stopformula`
-als verbindliche Schreibweise. In MetaPost-Beschriftungen verwende
-`\math{...}`. Die Schreibweisen `$...$` und `$$...$$` sind verboten.
-
-Der mitgelieferte **Pflicht-Checker** liegt als reguläres Plugin unter
-`src/context_agent/resources/nogos/dollar_math.py`, unabhängig vom optionalen
-job-spezifischen `nogo_directory`. Er führt im **bestehenden Hosted-Container**
-einen zusätzlichen ConTeXt-LMTX-Satzlauf aus. Dafür erhält ConTeXt eine
-instrumentierte, temporäre Kopie von `main.tex`; das originale `main.tex`,
-`main.pdf` und `context.log` werden dabei **nicht** verändert. Seine tatsächlichen
-Math-Shift-Tokens werden erkannt, Kommentare, Verbatim, Lua-Strings und bloße
-MetaPost-Strings nicht. Es handelt sich um eine *dynamische* Prüfung: Ungenutzte
-TeX-/MetaPost-Definitionen werden nicht erfasst. Bei MetaPost-Zeilen kann die
-Meldung auf das Ende des MP-Blocks statt die Beschriftungszeile verweisen;
-Mehrfachtreffer je Zeile werden zusammengefasst.
-
-**API-Besonderheit:** Die Containers API bietet keinen direkten Shell-Exec-Endpunkt.
-Statt einer Dateilisten-Abfrage startet ein deterministischer Hosted-Shell-Brückenaufruf
-jetzt den generischen Supervisor `runtime/managed-process.py`. Die mit einer UUID
-gekennzeichnete Prozessausführung wird im Container abgekoppelt und schreibt den
-**tatsächlichen Exit-Code** und dauerhafte Logs atomar in `.processes/ID/`.
-Kurze Status-/Wait-Aufrufe im selben Container lesen diesen Zustand. Ein
-`response.status=completed` bei gleichzeitigem `shell_call_output.status=in_progress`
-beendet den **Prozess nicht**, und auch ein vorläufiger Exit-Code 0 gilt niemals
-als Erfolg. Der Lint-Bericht wird aus der gespeicherten Ausgabe geholt und mit
-Nonce validiert, ohne Containers-Dateilisten-Polling. Mehrere kurze Responses-
-Aufrufe sind hierfür erforderlich und werden einzeln auf das Turn-Limit und die
-Tokenstatistik angerechnet. Die Prozesslaufzeit ist von der Pollingdauer getrennt.
-`max_nogo_repairs` gilt unverändert.
-
-Bei MetaPost-Grafiken sollen relevante Punkte und Ereignisse einmal definiert,
-und bei Linien, Beschriftungen und Hilfskonstruktionen **wiederverwendet** werden.
-Das ist bewusst eine allgemeine **Generierungsvorgabe**, kein pauschales
-Verbot fester Zahlen: Maße, Abstände und unabhängige Koordinaten bleiben erlaubt.
-
-## Ausführen
-
-```bash
-context-agent validate /pfad/zum/mein-job
-context-agent run /pfad/zum/mein-job
-# Nach fehlgeschlagenem oder abgebrochenem Lauf MIT Checkpoint:
-context-agent resume /pfad/zum/mein-job
-```
-
-Ein erfolgreicher Lauf schreibt nach `result/`:
+Verzeichnisbeispiel:
 
 ```text
-main.tex
-main.pdf
-context.log
-include-snapshot.tar.gz
-report.json
-transcript.jsonl
-checkpoint.json
-uncertainties.md  # nur bei unklaren Quellenstellen
+src/context_agent/resources/quality_rules/
+  semantic_numbers/
+    rule.yaml
+    checker.py
+    refinement.py
+    resources/digits.tex
 ```
 
-`review.reproduction` ist standardmäßig **ausgeschaltet**. Ohne diese Option bleibt
-auch für andere Arten von Jobs (z. B. neue Übungsaufgaben erstellen) der bisherige
-Ablauf erhalten. Mit `review.reproduction: true` laufen drei getrennte Schritte:
+Die fünf Regeln sind:
 
-1. **Quelleninventar VOR der Erzeugung:** Der schreibende Agent wird erst gestartet,
-   nachdem ein read-only Modellaufruf alle maßgeblichen Quellen inventarisiert hat.
-   Das Inventar wird als überprüfbare Checkliste an die Erzeugung übergeben.
-   Der prüfende Modellaufruf erhält dabei keinen vorherigen Erzeugungsverlauf.
-   Der Agent prüft die maßgeblichen Eingaben (`role: recreate`
-   sowie verbindliche `content`-/`statement`-Quellen) anhand der tatsächlichen
-   Quellseiten. Auch Scan-PDFs **ohne Textebene** werden seitenweise als Bilder
-   bereitgestellt. Das Modell inventarisiert nur den in `task.md` beauftragten
-   Inhalt: Aufgaben, Zahlen, Formeln, Diagramme, Beschriftungen und vorhandene
-   Lösungen. Bewusst ausgeschlossene Quellteile gehören nicht zum Inventar.
-2. **Unabhängiger Inhaltsabgleich:** Die gerenderten Ausgabeseiten werden
-   inventarbezogen überprüft. Sichere Abweichungen führen zu einer automatischen
-   Reparatur. Nicht zuordenbare Einträge werden nach Sichtung aller Seiten noch
-   einmal geprüft. Kann der Agent sie weder bestätigen noch sicher als fehlend
-   belegen, bleiben sie als Unsicherheit offen – **nicht als bestanden**.
-3. **Getrennte visuelle Prüfung:** Diese kontrolliert Wiedergabefehler wie
-   abgeschnittene Grafiken und überlappende Beschriftungen. Sie soll ausdrücklich
-   **keine** typografischen, sprachlichen oder fachlichen Verbesserungen vornehmen.
+| ID | Konvention |
+|---|---|
+| `dollar_math` | Keine ausgeführte Mathematik mit `$...$`; ConTeXt-Mathematikmakros verwenden |
+| `semantic_numbers` | Dezimalzahlen und numerische Größen ab 1000 mit `\dn`, Jahreszahlen ausgenommen |
+| `semantic_math_text` | Sprachliche Formelteile mit `\text` bzw. `\mtext` statt `\rm` |
+| `number_with_unit` | `10\unit{km/h}`, `\dn{5}\unit{Meter}`, `30\unit{Degree}`, `\dn{12.5}\unit{Percent}` |
+| `coordinate_reuse` | Logisch identische MetaPost-Punkte benennen; identische Zahlenpaare zunächst nur als Kandidaten melden |
 
-Die Aufgabenbeschreibung und die Quellen-Policies gelten in allen Schritten.
-**Strikte Trennung der Modellkontexte:** Jedes Inventar, jeder Inhaltsabgleich
-und jede visuelle Begutachtung wird als neuer Responses-Aufruf **ohne
-`previous_response_id`** ausgeführt, mit separaten Reviewer-Instruktionen und
-**ohne Shell-Tools**. Es werden ausschließlich die für diesen Check erforderlichen
-Original- beziehungsweise Ausgabeseiten und der konkrete Auftrag mitgegeben.
-Die visuelle Prüfung erhält die Originalseiten erneut (zuerst Originale, danach
-Ausgabeseiten). Für eine globale Fehlstellenprüfung werden alle Ausgabeseiten
-in einem neuen Aufruf vorgelegt. Frühere Review-Antworten gelten nicht als Beweis.
+Die Definition des Zahlenmakros `\dn` gehört zur Regel `semantic_numbers`, nicht ins globale Schul-Template. Das Einheiten-Refinement kann diese Ressource technisch mitverwenden, ohne die Zahlenregel zu aktivieren. Der Bundler liefert die Makrodatei im Hosted-Job mit, der Generator bindet sie bei Bedarf ein, und der Include-Snapshot bewahrt sie für eine spätere unabhängige Kompilierung.
 
-Reparaturen bleiben dagegen mit `previous_response_id` im **Erzeugungsverlauf**;
-nach jeder Reparatur laufen die unabhängigen Prüfungen erneut. Das einmal vor
-Beginn erstellte Quelleninventar bleibt dabei unverändert. Der Upload der
-Originalseiten wird innerhalb eines Runs wiederverwendet. Dies kann trotz
-Caching bei langen Scans erhebliche zusätzliche Bild-Tokenkosten verursachen.
+## Pipeline und Qualitätssicherung
 
-Das Ergebnis `result/report.json` unterscheidet:
+1. **Konsistenzprüfung** gegen Originalauftrag, Template und ausgewählte Qualitätsregeln, bevor vorhandene Ergebnisse gelöscht werden. Bei einem relevanten Konflikt: Abbruch mit Ursache. Der LLM-Preflight plant außerdem Batches und Reihenfolge **ausschließlich** für die ausgewählten IDs.
+2. **Erstellung und echte Kompilierung** im Hosted-Container. Output: `main.tex`, `main.pdf`, `context.log` und `include-snapshot.tar.gz`.
+3. **Unabhängige Requirements Validation** vor der Refinement-Phase; bei Reproduktionsaufträgen mit Quellinventar, Inhalts- und visueller Prüfung.
+4. **Validierter Dokument-Snapshot** in `result/.validated/` mit SHA-256-Hashes der zusammengehörigen Artefakte.
+5. **Checker und Refinements**: Regeln prüfen denselben Dokument-/Include-Zustand. Python-Autofixes sind gegen den Ausgangshash geschützt und dürfen sich nicht überlappen. Komplexere Fälle bearbeitet das LLM.
+6. **Regression Gate** nach jeder Reparatur: Requirements erneut gegen Originalauftrag prüfen, anschließend Verschlechterungen anderer ausgewählter Qualitätsregeln erkennen. Bei Regression: Rollback.
+7. **Ergebnis**: `success` / `needs_review` / `failed` sowie `report.json`, `transcript.jsonl`, ggf. `uncertainties.md` und Validierungs-/Reparaturjournal.
 
-- `success`: keine bestätigten Fehler oder offenen Unsicherheiten; Include-Änderungen
-  dürfen übernommen werden.
-- `needs_review`: PDF wurde erstellt, aber mindestens eine Unsicherheit bleibt;
-  **kein** uneingeschränkter Erfolg, Exitcode 1, **keine** Include-Übernahme.
-- `failed`: Fehler, offene bestätigte Befunde oder nicht abgeschlossene Prüfung;
-  Exitcode 1, keine Include-Übernahme.
+Ein ConTeXt-Build allein ist **kein** Korrektheitsbeweis. Wer einen Validierungsstatus `uncertain` erhält, bekommt deshalb keinen falschen `success`. `needs_review` lässt einen besten überprüften Zwischenstand erhalten. Für die Wiederaufnahme ist `result/checkpoint.json` vorgesehen, nicht das transaktionale Verzeichnis `.validated`.
 
-Die Inhalts- und Sichtprüfungen haben **getrennte** Reparaturbudgets unter
-`review.max_content_repairs` und `review.max_visual_repairs`. No-go-Reparaturen
-verwenden weiterhin `limits.max_nogo_repairs`. `review_repairs` zählt beide
-Reproduktionstypen zusammen; `content_repairs` und `visual_repairs` sind getrennt
-im Bericht aufgeführt. Die Rundenobergrenze `limits.max_agent_turns` bleibt gültig.
+**Wichtig:** Die LLM-Checker und Requirements-Audits sind probabilistisch und keine formalen Beweise. Die statischen Zahlen-/Einheiten- und Koordinatenscanner sind absichtlich konservative Kandidatenerkenner. Der dynamische Dollar-Linter dagegen untersucht die tatsächlich ausgeführte ConTeXt-Syntax. Ein echter Hosted-LMTX-/API-Abnahmetest ist weiterhin erforderlich; die Testsuite enthält Offline-Fakes.
 
-Der Bericht enthält `source_inventory`, `content_findings`, `content_uncertainties`,
-`review_findings`, `review_uncertainties` und eine `review_history` aller
-Prüfdurchgänge. `usage_by_phase` weist Input-/Output-Tokens, Cache-Hits,
-Reasoning-Tokens sowie Shell-Aufrufe/-Befehle getrennt je Phase aus.
-
-**Kostenoptimierung ohne Qualitätsverlust:** Der Systemprompt fordert das
-Zusammenfassen zusammengehöriger Shell-Aktionen und vermeidet leere
-Statuskommandos. Es wird **kein neues verpflichtendes Token- oder Shell-Limit**
-eingeführt. Bestehende konfigurierbare Job-Grenzen gelten weiterhin, darunter
-`limits.max_agent_turns`. Da die unabhängige Inhaltsprüfung mehr Modellrunden
-benötigt, ist für mehrseitige Reproduktionen eine ausreichend hohe Einstellung
-(z. B. 24 statt 6 Runden) wichtig. Der zulässige Wertebereich wurde dafür
-auf 1–100 erweitert. Die Bilderstellung und Prüfungen verursachen zusätzliche
-API-Tokens, die sich nicht durch spätere Einsparungen garantiert ausgleichen.
-
-Die Prüfung ist ein **best-effort Modellvergleich, kein formaler Beweis** einer
-100-prozentigen Reproduktion. Besonders bei schlecht lesbaren Scans bleibt die
-abschließende menschliche Kontrolle wichtig.
-
-
-### Checkpoints und `resume` (Version 0.6.0)
-
-Neue Runs schreiben automatisch `result/checkpoint.json`, auch bei gescheiterter
-Abnahme. Darin liegen Eingabe-Fingerprints (SHA-256), Quelleninventar, bisherige
-Befunde und Unsicherheiten, die Reparaturzähler, der aktuelle Verarbeitungsschritt
-und die letzte Generator-Response-ID als **Referenz**. Das `transcript.jsonl`
-bleibt zusätzlich als ausführliches Protokoll erhalten. **Die alte API-Konversation
-und der alte Hosted-Container werden nicht vorausgesetzt oder fortgeführt.**
-
-```bash
-context-agent resume examples/ca-messtechnik
-```
-
-`resume` akzeptiert ausschließlich Runs mit diesem Checkpoint-Schema. **Es gibt
-keine Unterstützung für alte Runs ohne Checkpoint.** Alle Eingaben, `job.yaml`,
-Template, `include/`, das ConTeXt-Archiv und ggf. No-go-Regeln müssen gegenüber
-dem gespeicherten Fingerprint bytegleich bleiben; andernfalls wird verweigert.
-Der neue Hosted-Container bekommt den vorhandenen `main.tex`, `main.pdf`, Log,
-Include-Snapshot und die Prüfdateien aus dem Checkpoint. Bereits erstellte
-Quelleninventare werden wiederverwendet; das Dokument wird nicht pauschal neu
-erstellt, sondern nur für konkrete Fehler nachbearbeitet. Die Prüfungen werden
-anschließend unabhängig erneut ausgeführt. Nicht vollständig beendete Phasen
-können dabei erneut durchlaufen werden.
-
-Während `resume` wird **nicht direkt in `result/` gearbeitet**. Stattdessen
-steht der neue Arbeitsstand in `.resume-work/`. Erst bei `success` wird der
-bisherige Ordner in `.run-history/<Zeitstempel>-previous/` archiviert und
-`.resume-work/` nach `result/` verschoben. Bei Fehlschlag oder `needs_review`
-bleiben das originale `result/` und die erneut aufnehmbare `.resume-work/`
-getrennt erhalten. Checkpoints sind keine Garantie für Wiederaufnahme mitten in
-einem einzelnen API-Aufruf: Ein unterbrochener Aufruf muss wiederholt werden.
-
-### Unsichere Scanstellen
-
-Der Agent schreibt bei einer plausiblen, aber unsicheren Lesart die plausible
-Transkription ins Dokument, unmittelbar daneben im Quelltext einen
-`% [Scan unklar: Originalseite/Aufgabe, Beschreibung]`-Kommentar. Wenn keine
-plausible Lesart möglich ist, steht ein sichtbares `?`. Eine sichtbare
-`[Scan unklar: ...]`-Notiz im PDF ist bei Reproduktionsjobs ein lokaler
-No-go-Verstoß. `result/uncertainties.md` enthält die offenen Punkte separat.
-Sie verhindern weiterhin `success`, aber die Kommentare erscheinen nicht im PDF.
-
-### Fortschrittsanzeige
-
-Während langer Runs werden Phasen, Seitenblöcke, Reparaturbeginn/-ende und
-Abschluss mit verstrichener Zeit auf **stderr** ausgegeben. **stdout** bleibt dem
-abschließenden JSON-Bericht vorbehalten. Innerhalb eines noch laufenden
-Responses-API-Aufrufs gibt es ohne Streaming keinen Zwischenfortschritt.
-
-### Include-Roundtrip und Git
-
-Der Container erstellt nach jedem erfolgreichen Compile/Repair mit
-`runtime/collect-includes.sh` einen `include-snapshot.tar.gz`. Der Orchestrator
-validiert den Inhalt und verwendet zunächst ausschließlich die Sandbox-Dateien.
-Erst nach erfolgreicher No-go- und Reproduktionsprüfung werden Ergänzungen und
-Änderungen in `job/include/` übertragen. Der Bericht listet sie unter
-`include_changes`. Vorhandene Dateien dürfen nicht stillschweigend gelöscht werden;
-Links und unsichere Archivpfade werden abgewiesen. Beim Schreiben werden
-Git-Verschmutzung vor dem Start und zwischenzeitliche Änderungen erkannt.
-Bestehende uncommittete Include-Dateien werden **nicht überschrieben**. Es gibt
-weder automatische Git-Commits noch Pushes; danach selbst `git diff` und
-`git status` prüfen. Bei fehlgeschlagenen Prüfungen bleibt `job/include/` unverändert.
-
-`result/` enthält bei gescheiterten normalen Runs den letzten vollständigen
-Artefaktstand; bei gescheitertem `resume` bleibt das vorherige `result/` intakt. Das heißt nicht, dass dieses Ergebnis abgenommen wurde.
-
-Der Exitcode ist `0` bei vollständigem Erfolg, `1` bei einem ausgeführten, aber nicht
-abgenommenen Job und `2` bei ungültiger Konfiguration.
-
-## No-go-Checker
-
-Zusätzlich führt der Agent alle Python-Dateien im konfigurierten No-go-Verzeichnis aus. Ohne
-`nogo_directory` wird zuerst `job/nogos/` und anschließend ein projektweites `nogos/`
-gesucht. Pflicht-Checker aus `resources/nogos/` laufen unabhängig davon immer zuerst.
-
-Ein Checker exportiert eine Funktion:
-
-```python
-from context_agent.models import NogoFinding
-from context_agent.nogos import NogoContext
-
-
-def check(context: NogoContext) -> list[NogoFinding]:
-    source = context.main_tex.read_text(encoding="utf-8")
-    if "\\page[yes]" not in source:
-        return []
-    return [
-        NogoFinding(
-            rule_id="no-manual-pagebreak",
-            message="Manueller Seitenumbruch ist in diesem Dokument unerwünscht.",
-            file="main.tex",
-            repair_hint="Löse den Umbruch über die vorhandenen Template-Mechanismen.",
-        )
-    ]
-```
-
-Checker sind vertrauenswürdiger lokaler Python-Code. Sie dürfen komplexe Analysen durchführen,
-weitere Dateien des Jobs lesen oder externe lokale Werkzeuge aufrufen. Ein Checkerfehler wird
-nicht als bestandene Prüfung behandelt, sondern im Bericht als Fehler ausgewiesen.
-
-## Entwicklungsprüfungen
-
-```bash
-pytest
-ruff check .
-mypy
-```
-
-Der OpenAI-Livepfad benötigt einen API-Schlüssel und ein Konto mit Zugriff auf Hosted Shell und
-Container. Die lokalen Tests verwenden einen Fake-Agenten und verursachen keine API-Kosten.
-
-
-### Dateigrenze des Hosted Containers
-
-Das portable ConTeXt-Archiv wird als undurchsichtiges `.ctxbundle` hochgeladen und nicht als
-erkennbares Archiv. Erkannte Archive werden beim Bereitstellen für den Container aufgefächert;
-der vollständige ConTeXt-Baum enthält mehr als 6.000 Dateien. Der Runtime-Helper entfernt den
-privaten Header, entpackt ConTeXt nur für genau einen Übersetzungslauf und löscht den temporären
-Baum auch nach einem Compilerfehler wieder.
-
-## 0.7.0 – Verwaltete Hosted-Prozesse
-
-`runtime/managed-process.py` ist eine allgemeine Container-seitige
-Prozessausführung, inspiriert vom Start/Read/Terminate-Modell von Codex und dem
-Remote-Command-Lebenszyklus von OpenHands. Ein **eindeutiger Prozessname** darf
-nur einmal gestartet werden; damit ist ein Status-Poll niemals ein erneuter Build.
-Der Supervisor startet die Kindprozesse in einer eigenen Prozessgruppe, erfasst
-stdout/stderr als persistente Logs und schreibt deren wirklichen Exit-Code per
-atomarem Austausch einer Statusdatei. Die Shell-Response ist **nicht** das
-Wahrheitssystem für den Prozessabschluss. Die Zustände sind `starting`, `running`,
-`exited`, `failed`, `cancelled` und für unbekannte IDs `not_found`.
-
-Beispiel im vorbereiteten Hosted-Container:
-
-```bash
-p=/mnt/data/work/runtime/managed-process.py
-python3 "$p" start --cwd /mnt/data/work/job/result build01 -- bash \
-  /mnt/data/work/runtime/bootstrap-context.sh --compile \
-  /mnt/data/work/job/result/main.tex /mnt/data/work/job/result/context.log
-python3 "$p" wait build01 --seconds 5  # erneut aufrufen, bis beendet
-python3 "$p" status build01
-python3 "$p" read build01 --stream stderr --offset 0 --length 4096
-python3 "$p" cancel build01  # nur wenn wirklich abgebrochen werden soll
-```
-
-`--seconds` ist die maximale Dauer **eines einzelnen Statusabrufs**, keine
-Laufzeitgrenze für ConTeXt. Ein hartes Zeitlimit bleibt das übergeordnete
-Joblimit. Auch sehr lange Ausgaben sind über stückweise, base64-kodierte
-`read`-Antworten vollständig abrufbar. Beim Abbruch wird die Prozessgruppe
-zunächst mit SIGTERM und nötigenfalls mit SIGKILL beendet. Die Daten unter
-`.processes/` gelten pro Container und werden bei `resume` bewusst **nicht**
-containerübergreifend weitergeführt.
-
-Die Modellanweisungen empfehlen diese Schnittstelle auch für längere allgemeine
-Kompilierkommandos. Der automatische No-go-Linter verwendet sie direkt und
-modellunabhängig über die kontrollierte Shell-Brücke. Das Modell hat innerhalb
-seiner sonstigen Shell-Ausführung weiterhin eigenen Handlungsspielraum; direkte
-Shell-Aufrufe werden nicht vom Python-Backend abgefangen.
+Weitere technische Details, Abhängigkeiten und Grenzen stehen in [DESIGN.md](DESIGN.md). Geplante Ergänzungen und offene Testfälle stehen in [TODO.md](TODO.md).

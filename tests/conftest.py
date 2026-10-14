@@ -8,7 +8,7 @@ import pytest
 def create_job(
     root: Path,
     *,
-    nogo_directory: str | None = None,
+    quality_directory: str | None = None,
     max_turns: int = 6,
     max_repairs: int = 3,
 ) -> Path:
@@ -27,7 +27,8 @@ def create_job(
     )
     (job / "input" / "notes.md").write_text("Hinweise", encoding="utf-8")
 
-    nogo = f"\nnogo_directory: {nogo_directory}\n" if nogo_directory is not None else ""
+    quality_dir = (f"\nquality_directory: {quality_directory}\n"
+                   if quality_directory is not None else "")
     (job / "job.yaml").write_text(
         f"""model: test-model
 task: task.md
@@ -44,10 +45,11 @@ runtime:
   keep_remote: false
 limits:
   max_agent_turns: {max_turns}
-  max_nogo_repairs: {max_repairs}
+  max_quality_repairs: {max_repairs}
   timeout_seconds: 60
   max_output_tokens: 1000
-{nogo}""",
+quality: []
+{quality_dir}""",
         encoding="utf-8",
     )
     return job
@@ -56,3 +58,14 @@ limits:
 @pytest.fixture
 def job_factory():  # type: ignore[no-untyped-def]
     return create_job
+
+
+@pytest.fixture(autouse=True)
+def fake_preflight_for_offline_tests(monkeypatch):
+    """No network in tests; production always uses real stateless LLM preflight."""
+    import context_agent.workflow as workflow
+    def preflight(job, rules):
+        return {'status':'passed','conflicts':[],'uncertainties':[],
+                'plan':[[r.id] for r in rules]}
+    # run_job looks up llm_preflight only at invocation time.
+    monkeypatch.setattr(workflow, 'llm_preflight', preflight)

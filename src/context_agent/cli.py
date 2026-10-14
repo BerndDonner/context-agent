@@ -8,6 +8,7 @@ from pathlib import Path
 from context_agent import __version__
 from context_agent.errors import ContextAgentError
 from context_agent.job import load_job
+from context_agent.quality_rules import load_rules
 from context_agent.workflow import run_job
 
 
@@ -35,7 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             job = load_job(args.job)
+            rules = load_rules(job)
             print(f"Job gültig: {job.root}")
+            print('Explizite Qualitätsregeln: ' + (', '.join(rule.id for rule in rules) or '(keine)'))
             print(f"Template: {job.template_path}")
             print(f"Eingaben: {len(job.inputs)}, Referenzen: {len(job.references)}")
             return 0

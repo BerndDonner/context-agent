@@ -7,12 +7,14 @@ from pathlib import Path
 
 from context_agent.models import ResolvedJob
 from context_agent.include_sync import read_include_snapshot
+from context_agent.quality_rules import QualityRule
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
-                     *, resume_result: Path | None = None) -> Path:
+                     *, resume_result: Path | None = None,
+                     rules: tuple[QualityRule, ...] = ()) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "task": f"job/{job.config.task}",
@@ -59,6 +61,23 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
                 arcname = Path("job") / relative
                 archive.add(path, arcname=arcname, recursive=False)
 
+        # Dependencies are declared by selected rules, without activating others.
+        seen_resources: dict[str, bytes] = {}
+        for rule in rules:
+            for resource in rule.resources:
+                content = resource.source.read_bytes()
+                if resource.target in seen_resources:
+                    if seen_resources[resource.target] != content:
+                        raise ValueError(f'conflicting resource declarations: {resource.target}')
+                    continue
+                seen_resources[resource.target] = content
+                if resource.target in overrides or (job.include_dir / resource.target).is_file():
+                    continue
+                info = tarfile.TarInfo('job/include/' + resource.target)
+                info.mode = 0o644
+                info.size = len(content)
+                archive.addfile(info, io.BytesIO(content))
+
         if resume_result is not None:
             for relative, data in sorted(overrides.items()):
                 info = tarfile.TarInfo(f'job/include/{relative}')
@@ -104,5 +123,5 @@ def _skip_path(job: ResolvedJob, path: Path) -> bool:
         relative = path.relative_to(job.root)
     except ValueError:
         return True
-    return bool(relative.parts and relative.parts[0] in {"result", "nogos", ".resume-work", ".run-history"})
+    return bool(relative.parts and relative.parts[0] in {"result", "quality_rules", ".resume-work", ".run-history"})
 

@@ -20,15 +20,9 @@ Verbindliche Regeln:
    - `guidance`: freie sinnvolle Ausarbeitung ist erlaubt.
 5. Schreibe ConTeXt, nicht LaTeX. Bevorzuge dokumentierte aktuelle LMTX-Schnittstellen und
    die öffentliche API der mitgelieferten eigenen Module.
-6. Verwende für Inline-Mathematik ausschließlich `\m{...}`, für abgesetzte Formeln
-   `\startformula ... \stopformula`. Verwende niemals `$...$` oder `$$...$$`
-   als Mathe-Begrenzer; dies wird nach dem Kompilieren verbindlich geprüft.
-   In MetaPost-Beschriftungen benutze stattdessen `\math{...}` und niemals
-   `"$...$"`; die Prüfung erfasst auch tatsächlich gesetzte MetaPost-Beschriftungen.
-   Für MetaPost-Grafiken definiere wichtige Punkte, Knoten und Ereigniskoordinaten
-   einmal und verwende sie im gesamten Diagramm wieder. Leite abhängige
-   Positionen davon ab, statt dieselben Zahlen mehrfach einzutragen.
-   Numerische Konstanten für unabhängige Maße bleiben erlaubt.
+6. Alle zusätzlich für diesen Job verbindlichen Qualitätsregeln werden vom
+   Orchestrator ausdrücklich im Generierungsauftrag angegeben. Aktiviere niemals
+   selbstständig weitere Qualitätsregeln. Benutze die dort genannten ConTeXt-Makros.
 7. Entferne niemals stillschweigend beauftragte Inhalte, nur um einen Compilerfehler zu
    beseitigen. Reproduziere nur den Umfang aus `task.md`; ausdrücklich ausgenommene
    Quellbestandteile sind kein Bestandteil der Ausgabe, auch bei `verbatim`.

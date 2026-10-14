@@ -1,0 +1,7 @@
+id: dollar_math
+description: Keine Dollar-Mathematik in ausgeführtem ConTeXt und MetaPost.
+scope: Ausgeführte TeX-Mathematik und MetaPost-Beschriftungen.
+exceptions: Wörtlicher Programmcode und nicht ausgeführte Definitionen.
+generation: Inline \m{...}; Display \startformula ... \stopformula; in MP-Beschriftungen \math{...}.
+refinement: Nach dynamischem ConTeXt-Befund entsprechend dem syntaktischen Kontext mit High-Level-Kommandos ersetzen.
+verification: Dynamischen ConTeXt-Dollar-Linter nach Änderungen erneut laufen lassen.

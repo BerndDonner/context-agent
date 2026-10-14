@@ -19,7 +19,9 @@ def fingerprint(job: ResolvedJob) -> dict[str, str]:
     paths = [job.config_path, job.task_path, job.template_path, job.context_archive]
     paths.extend(i.path for i in job.inputs)
     paths.extend(job.references)
-    for folder in (job.include_dir, job.nogo_directory):
+    from context_agent.quality_rules import load_rules
+    rule_folders = [rule.root for rule in load_rules(job)]
+    for folder in (job.include_dir, job.quality_directory, *rule_folders):
         if folder and folder.is_dir():
             paths.extend(p for p in folder.rglob('*') if p.is_file())
     hashes: dict[str, str] = {}

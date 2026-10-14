@@ -1,0 +1,9 @@
+id: coordinate_reuse
+description: Logisch identische MetaPost-Punkte einmal definieren und als pair wiederverwenden.
+scope: MetaPost-Grafiken und Diagramme.
+exceptions: Unabhängige Punkte mit zufällig gleichen Zahlenwerten und numerische Maßkonstanten.
+generation: Benannte Punkte und von ihnen abgeleitete Koordinaten statt wiederholt ausgeschriebener logischer Punkte
+  verwenden.
+refinement: Python sucht identische Zahlenpaare als Warnkandidaten; LLM entscheidet die semantische Identität und
+  repariert iterativ.
+verification: ConTeXt/MetaPost kompilieren und Diagramm visuell/fachlich gegen Auftrag prüfen.

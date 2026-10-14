@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from context_agent.errors import ArtifactError
-from context_agent.models import NogoFinding, ResolvedJob
+from context_agent.models import QualityFinding, ResolvedJob
 
 
 @dataclass(frozen=True)
 class ReviewResult:
-    findings: list[NogoFinding]
+    findings: list[QualityFinding]
     uncertainties: list[str]
 
 
@@ -119,9 +119,9 @@ Ist alles in Ordnung: {{"findings":[],"uncertainties":[]}}.
 """
 
 
-def repair_prompt(findings: list[NogoFinding], *, scope: str) -> str:
+def repair_prompt(findings: list[QualityFinding], *, scope: str) -> str:
     """Prevent a repair from expanding the result beyond the requested scope."""
-    from context_agent.nogos import findings_as_prompt
+    from context_agent.quality_rules import findings_as_prompt
 
     return (findings_as_prompt(findings) + "\n\n" + scope + "\n"
             "Repariere NUR nachgewiesene Abweichungen IM BEAUFTRAGTEN Umfang. "
@@ -141,7 +141,7 @@ def parse_review(text: str, *, start_page: int, end_page: int) -> ReviewResult:
         raise ArtifactError('reproduction review did not return valid JSON') from exc
     if not isinstance(doc, dict) or not isinstance(doc.get('findings'), list) or not isinstance(doc.get('uncertainties'), list):
         raise ArtifactError('malformed reproduction review structure')
-    findings: list[NogoFinding] = []
+    findings: list[QualityFinding] = []
     uncertainties = [str(item) for item in doc['uncertainties'] if isinstance(item, str)]
     for item in doc['findings']:
         if not isinstance(item, dict):
@@ -160,7 +160,7 @@ def parse_review(text: str, *, start_page: int, end_page: int) -> ReviewResult:
         source = item.get('source_page')
         source_label = f' (Originalseite {source})' if type(source) is int and source > 0 else ''
         hint = item.get('repair_hint')
-        findings.append(NogoFinding(
+        findings.append(QualityFinding(
             rule_id=f'reproduction-{category}',
             message=f'PDF-Seite {page}{source_label}: {message}',
             file='main.pdf',

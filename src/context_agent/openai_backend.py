@@ -466,6 +466,27 @@ class OpenAIHostedSession:
                     pass
             raise
 
+    def apply_quality_edits(self, edits: list[dict[str, Any]], *, max_api_calls: int) -> AgentTurn:
+        """Apply optimistic guarded edits, compile, and collect includes remotely."""
+        payload = base64.b64encode(json.dumps(edits).encode('utf-8')).decode('ascii')
+        commands = [
+            ['python3', '/mnt/data/work/runtime/apply-quality-edits.py', '--payload', payload],
+            ['bash', '/mnt/data/work/runtime/bootstrap-context.sh', '--compile',
+             '/mnt/data/work/job/result/main.tex', '/mnt/data/work/job/result/context.log'],
+            ['bash', '/mnt/data/work/runtime/collect-includes.sh', '/mnt/data/work/job'],
+        ]
+        turns: list[AgentTurn] = []
+        for argv in commands:
+            remaining = max_api_calls - sum(turn.api_calls for turn in turns)
+            if remaining <= 0:
+                raise RemoteAgentError('insufficient API budget for quality edit validation')
+            _, turn = self.run_managed_command(argv, max_api_calls=remaining)
+            turns.append(turn)
+        usage = _sum_usages([{'usage': t.usage} for t in turns])
+        return AgentTurn(turns[-1].response_id, 'completed', '',
+                         {'response_ids': [r for t in turns for r in t.raw.get('response_ids', [])]},
+                         usage, sum(t.api_calls for t in turns))
+
     def run_dollar_lint(self, *, max_api_calls: int) -> tuple[dict[str, Any], AgentTurn]:
         """Use the general managed executor, never a container file-list poll."""
         nonce = uuid.uuid4().hex

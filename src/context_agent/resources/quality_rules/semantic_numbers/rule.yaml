@@ -1,0 +1,16 @@
+id: semantic_numbers
+description: Dezimalzahlen und betragsmäßig mindestens vierstellige Zahlgrößen durch \dn{...} semantisch kennzeichnen.
+scope: Gesetzter Fließtext, Mathematik und Beschriftungen.
+exceptions: Jahreszahlen, Bezeichner, Identifikatoren, Programmcode, MetaPost-Koordinaten; ganze Zahlen bis 999
+  sind optional; \dn{1234} ist korrekt.
+generation: Verwende \dn für Dezimalzahlen und Größen ab 1000, nicht unmittelbar \digits. Konvertiere deutsches
+  Dezimalkomma als Eingabepunkt.
+refinement: Sichere lokale Zahlenliterale verbessern; mehrdeutige Zahlen und Kalenderjahre nicht blind ersetzen.
+  Die Regel liefert die benötigte Makrodefinition mit.
+verification: Mit ConTeXt kompilieren und Zahlenwerte gegen den Originalauftrag validieren.
+resources:
+- provider: semantic_numbers
+  path: digits.tex
+  target: quality-rules/digits.tex
+  macro: \dn
+  include: ../include/quality-rules/digits.tex

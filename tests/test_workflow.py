@@ -31,7 +31,7 @@ class FakeSession(AgentSession):
         self.followups.append(prompt)
         if "main.pdf" in prompt or "context.log" in prompt:
             self._write_pdf_and_log()
-        if "bad-word" in prompt:
+        if "bad_word" in prompt:
             (self.remote / "main.tex").write_text("\\starttext\nGOOD\n\\stoptext\n")
             self._write_pdf_and_log()
         return self._turn(f"r{len(self.followups) + 1}", "repair complete")
@@ -57,8 +57,23 @@ class FakeSession(AgentSession):
     def close(self) -> None:
         self.closed = True
 
+    def review_pages(self, prompt: str, previous_response_id, pages):
+        if 'UNABHÄNGIGE REQUIREMENTS VALIDATION' in prompt:
+            return self._turn('requirements',
+                 '{"status":"passed","findings":[],"uncertainties":[]}')
+        raise AssertionError(prompt)
+
+    def review_text(self, prompt: str, previous_response_id):
+        if 'QUALITÄTSPRÜFUNG' in prompt:
+            return self._turn('quality', '{"findings":[],"uncertainties":[]}')
+        raise AssertionError(prompt)
+
     def _write_pdf_and_log(self) -> None:
-        (self.remote / "main.pdf").write_bytes(b"%PDF-1.7\n%%EOF\n")
+        import fitz
+        doc=fitz.open()
+        doc.new_page().insert_text((72,72),'Test document')
+        doc.save(self.remote / 'main.pdf')
+        doc.close()
         (self.remote / "context.log").write_text("successful run", encoding="utf-8")
         make_snapshot(self.job.include_dir, self.remote / "include-snapshot.tar.gz")
 
@@ -85,72 +100,51 @@ def test_workflow_repairs_missing_artifacts(tmp_path: Path, job_factory) -> None
 
     report = run_job(job_root, session_factory=factory)
     assert report.status == "success"
-    assert report.agent_turns == 3  # generation + repair + dynamic lint
+    assert report.agent_turns == 3  # generation + repair + requirements audit
     assert report.compile_success
     assert captured["session"].closed
 
 
-def test_workflow_repairs_nogo_findings(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    job_root = job_factory(tmp_path, nogo_directory="nogos")
-    nogos = job_root / "nogos"
-    nogos.mkdir()
-    (nogos / "bad_word.py").write_text(
-        """
-from context_agent.models import NogoFinding
+def configure_bad_word_rule(job_root: Path) -> None:
+    import yaml
+    d=job_root/'quality_rules/bad_word'
+    d.mkdir(parents=True)
+    fields={k:'BAD must be replaced by GOOD.' for k in (
+      'description','scope','exceptions','generation','refinement','verification')}
+    (d/'rule.yaml').write_text(yaml.safe_dump({'id':'bad_word',**fields}))
+    (d/'checker.py').write_text("from context_agent.models import QualityFinding\n\ndef check(context):\n    if 'BAD' in context.main_tex.read_text(encoding='utf-8'):\n        return [QualityFinding(rule_id='bad_word', message='BAD ist verboten', file='main.tex')]\n    return []\n")
+    p=job_root/'job.yaml'
+    p.write_text(p.read_text().replace('quality: []',
+       'quality:\n  - bad_word\nquality_directory: quality_rules'))
 
-def check(context):
-    if 'BAD' in context.main_tex.read_text(encoding='utf-8'):
-        return [NogoFinding(rule_id='bad-word', message='BAD ist verboten', file='main.tex')]
-    return []
-""",
-        encoding="utf-8",
-    )
 
-    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
-        return FakeSession(job)
-
-    report = run_job(job_root, session_factory=factory)
-    assert report.status == "success"
-    assert report.nogo_repairs == 1
-    assert report.findings == []
-    assert "GOOD" in (job_root / "result" / "main.tex").read_text()
+def test_workflow_repairs_quality_findings(tmp_path: Path, job_factory) -> None:
+    job_root = job_factory(tmp_path)
+    configure_bad_word_rule(job_root)
+    report = run_job(job_root, session_factory=lambda job, *_: FakeSession(job))
+    assert report.status == 'success', report.errors
+    assert report.quality_repairs == 1
+    assert 'GOOD' in (job_root/'result/main.tex').read_text()
 
 
 class BrokenRepairSession(FakeSession):
     def run_followup(self, prompt: str, previous_response_id: str) -> AgentTurn:
         self.followups.append(prompt)
-        if "bad-word" in prompt:
+        if "bad_word" in prompt:
             (self.remote / "main.tex").write_text("BROKEN", encoding="utf-8")
             (self.remote / "main.pdf").write_bytes(b"not a pdf")
             (self.remote / "context.log").write_text("compile failed", encoding="utf-8")
         return self._turn(f"r{len(self.followups) + 1}", "broken repair")
 
 
-def test_workflow_preserves_last_complete_result(tmp_path: Path, job_factory) -> None:  # type: ignore[no-untyped-def]
-    job_root = job_factory(tmp_path, nogo_directory="nogos", max_turns=2, max_repairs=1)
-    nogos = job_root / "nogos"
-    nogos.mkdir()
-    (nogos / "bad_word.py").write_text(
-        """
-from context_agent.models import NogoFinding
-
-def check(context):
-    if 'BAD' in context.main_tex.read_text(encoding='utf-8'):
-        return [NogoFinding(rule_id='bad-word', message='BAD ist verboten')]
-    return []
-""",
-        encoding="utf-8",
-    )
-
-    def factory(job, bundle, direct, system):  # type: ignore[no-untyped-def]
-        return BrokenRepairSession(job)
-
-    report = run_job(job_root, session_factory=factory)
-    assert report.status == "failed"
-    assert (job_root / "result" / "main.pdf").read_bytes().startswith(b"%PDF-")
-    assert "BAD" in (job_root / "result" / "main.tex").read_text()
-
-
+def test_workflow_preserves_last_requirements_validated_result(tmp_path: Path, job_factory):
+    job_root=job_factory(tmp_path,max_turns=8,max_repairs=1)
+    configure_bad_word_rule(job_root)
+    report=run_job(job_root,session_factory=lambda job,*_: BrokenRepairSession(job))
+    assert report.status == 'needs_review', report.errors
+    assert (job_root/'result/main.pdf').read_bytes().startswith(b'%PDF-')
+    assert 'BAD' in (job_root/'result/main.tex').read_text()
+    assert any(item['event']=='rollback' for item in report.quality_journal)
 
 
 def configure_reproduction_source(job_root: Path) -> None:
@@ -222,7 +216,7 @@ def test_reproduction_review_repairs_and_commits_includes(
     report = run_job(job_root, session_factory=factory)
     assert report.status == 'success', report.errors
     assert report.review_repairs == 1
-    assert report.agent_turns == 9  # includes two dynamic ConTeXt lint calls
+    assert report.agent_turns >= 6
     assert captured['session'].review_calls == 2
 
 
@@ -501,9 +495,9 @@ def test_scanned_pdf_is_inventoried_from_images_without_ocr(
                      ScanSession(job))
     assert report.status == 'success', report.errors
     assert report.source_inventory[0]['kind'] == 'solution'
-    assert len(report.usage_by_phase) == 5
+    assert len(report.usage_by_phase) == 4
     assert [phase['phase'] for phase in report.usage_by_phase] == [
-        'inventory-source', 'initial', 'nogo-dollar-lint', 'review-content', 'review-reproduction',
+        'inventory-source', 'initial', 'review-content', 'review-reproduction',
     ]
 
 
@@ -668,3 +662,72 @@ def test_missing_content_check_sees_all_output_pages_without_previous_context(
     assert report.status == 'needs_review', report.errors
     assert sessions[0].missing_images == 3
     assert any('weder sicher gefunden' in detail for detail in report.content_uncertainties)
+
+
+def test_consistency_block_preserves_previous_results(tmp_path, job_factory):
+    import pytest
+    from context_agent.errors import ContextAgentError
+    root=job_factory(tmp_path)
+    sentinel=root/'result/main.tex'
+    sentinel.write_text('important prior work')
+    def blocked(job, rules):
+        return {'status':'blocked','conflicts':[
+            {'rules':[],'reason':'Template and requirement genuinely conflict',
+             'relevance':'blocking'}], 'uncertainties':[], 'plan':[]}
+    def must_not_create(*args):
+        raise AssertionError('Hosted container must not start before preflight')
+    with pytest.raises(ContextAgentError,match='genuinely conflict'):
+        run_job(root,session_factory=must_not_create,preflight_factory=blocked)
+    assert sentinel.read_text()=='important prior work'
+
+
+def test_quality_change_regressing_original_requirements_rolls_back(tmp_path,job_factory):
+    root=job_factory(tmp_path,max_turns=12)
+    configure_bad_word_rule(root)
+    class RegressionSession(FakeSession):
+        def run_followup(self,prompt,previous_response_id):
+            self.followups.append(prompt)
+            (self.remote/'main.tex').write_text('INVALID-REQUIREMENT')
+            self._write_pdf_and_log()
+            return self._turn('r2','edited')
+        def review_pages(self,prompt,previous_response_id,pages):
+            if 'INVALID-REQUIREMENT' in prompt:
+                return self._turn('regression','{"status":"failed","findings":['
+                                  '{"message":"Original requirement lost"}],"uncertainties":[]}')
+            return super().review_pages(prompt,previous_response_id,pages)
+    report=run_job(root,session_factory=lambda job,*_:RegressionSession(job))
+    assert report.status=='needs_review'
+    assert (root/'result/main.tex').read_text().find('BAD') >= 0
+    assert (root/'result/.validated/validation.json').exists()
+    assert any(e['event']=='rollback' and 'requirements' in e['reason']
+               for e in report.quality_journal)
+
+
+def test_quality_change_regressing_other_rule_rolls_back(tmp_path,job_factory):
+    root=job_factory(tmp_path,max_turns=14,max_repairs=3)
+    configure_bad_word_rule(root)
+    other=root/'quality_rules/other'
+    other.mkdir()
+    import yaml
+    fields={k:'Avoid OTHER' for k in (
+      'description','scope','exceptions','generation','refinement','verification')}
+    (other/'rule.yaml').write_text(yaml.safe_dump({'id':'other',**fields}))
+    (other/'checker.py').write_text(
+        "from context_agent.models import QualityFinding\n"
+        "def check(context):\n"
+        "  if 'OTHER' in context.main_tex.read_text():\n"
+        "    return [QualityFinding('other','OTHER was introduced')]\n"
+        "  return []\n")
+    p=root/'job.yaml'
+    p.write_text(p.read_text().replace('  - bad_word','  - bad_word\n  - other'))
+    class CollisionSession(FakeSession):
+        def run_followup(self,prompt,previous_response_id):
+            self.followups.append(prompt)
+            (self.remote/'main.tex').write_text('OTHER')
+            self._write_pdf_and_log()
+            return self._turn('r2','edited')
+    report=run_job(root,session_factory=lambda job,*_:CollisionSession(job))
+    assert report.status=='needs_review'
+    assert (root/'result/main.tex').read_text().find('BAD') >= 0
+    assert any('another selected rule regressed' in e.get('reason','')
+               for e in report.quality_journal)

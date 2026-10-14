@@ -1,0 +1,10 @@
+id: semantic_math_text
+description: Für sprachliche Texte in Mathematik die passenden High-Level-Kommandos \mtext und \text statt Low-Level-Schriftumschaltungen
+  wie \rm verwenden.
+scope: Semantische Textteile innerhalb mathematischer Ausdrücke.
+exceptions: Legitime Template-Einstellungen style=\rm, Definitionen sowie bewusst eingesetztes \text in \dn.
+generation: Sprachliche Einschübe in Formeln bevorzugt mit \mtext, kurze Textbestandteile/Indices situationsabhängig
+  mit \text setzen.
+refinement: Math-Modus-bezogene Low-Level-Fontwechsel semantisch einordnen, Textkommandos differenziert verwenden;
+  niemals \text pauschal verbieten.
+verification: Syntax und Typografie mit ConTeXt prüfen, mathematische Bedeutung gegen Originalauftrag bewahren.
