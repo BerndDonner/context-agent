@@ -1,0 +1,193 @@
+\mainlanguage[de]
+
+\setuplayout
+  [backspace=2.0cm,
+   height=middle,
+   width=middle,
+   leftmargin=1.8cm,
+   footerdistance=0.0cm,
+   rightmargindistance=0.2cm,
+   rightmargin=1.8cm,
+   bottom=0.5cm,
+   leftmargindistance=0.2cm,
+   header=2.1cm,
+   headerdistance=0.5cm,
+   footer=0.5cm,
+   top=0cm,
+   topspace=0.5cm,
+   bottomspace=0.0cm]
+
+\setupformulas[align=right]
+
+\definehead[exercise][subsection]
+
+\setuphead
+  [exercise]
+  [number=yes,
+   style=,
+   numberstyle=\ss\bf\tfb,
+   textstyle=\ss,
+   alternative=margin,
+   numbercommand={\determineheadnumber[subsection]\currentheadnumber\gobbleoneargument}]
+
+\setuphead
+  [chapter]
+  [number=no,
+   style=,
+   textstyle=\tfb\ss]
+
+\setuphead
+  [section]
+  [number=no,
+   style=,
+   textstyle=\tf\ss]
+
+\definemeasure[headerimageheight][\dimexpr(\headerheight-2ex)]
+
+\definelayer[sabel]
+
+\startsetups[sabel]
+
+\setlayerframed[sabel][x=0mm,y=0mm][frame=off,offset=none]
+{%
+   \setupTABLE[start][style=\tfx]
+   \setupTABLE[r][each][height=0.85\baselineskip]
+   \setupTABLE[column][1][align=right, width=.4\textwidth, loffset=-2pt, toffset=-5pt]%
+   \setupTABLE[column][2][align={center,lohi}, width=.2\textwidth]%
+   \setupTABLE[column][3][align=left, width=.4\textwidth, roffset=-2pt, toffset=-5pt]%
+   \bTABLE[frame=off]
+   \bTR \bTD Sabel-GBS Fachakademie für Wirtschaft \eTD \bTD [nr=5] \dontleavehmode\externalfigure[../Logo/sabel.png][maxheight=\measure{headerimageheight}, frame=off]\dontleavehmode \eTD \bTD Wintersemester 2023/24 \eTD \eTR
+   \bTR \bTD Mathematik Fachhochschulreife         \eTD                                                                                                                                     \bTD Klasse 4FA             \eTD \eTR
+   \bTR \bTD B.~Donner                             \eTD                                                                                                                                     \bTD                        \eTD \eTR
+   \bTR \bTD \strut                                \eTD                                                                                                                                     \bTD                        \eTD \eTR
+   \bTR \bTD 1. Klausur                            \eTD                                                                                                                                     \bTD 13.12.2023             \eTD \eTR
+   \eTABLE}
+
+\stopsetups
+
+\setupbackgrounds[header][text][bottomframe=on,setups=sabel,background=sabel]
+\setuppagenumbering[location={footer,middle},style=\bfc]
+
+\setupfootertexts
+  [BE: 35 Arbeitszeit: 60-75min][Viel Erfolg!]
+  [Viel Erfolg!][BE: 35 Arbeitszeit: 60-75min]
+
+
+\definedescription[example][
+  headstyle=\it, style=, align=left, location=top,
+  width=broad, margin=1cm, indenting=never, text=\hskip-1cm]
+
+\definemathmatrix[pmatrix][
+  left={\left(\,}, right={\,\right)}]
+
+%\usemodule[units]
+
+\definemathcommand [kgV] [nolop] {\mfunction{kg\kern-.15em\hbox{V}}}
+
+\setdigitmode 3
+
+\setupitemgroup[itemize][1][n,repeat][width=1em]
+\setupitemgroup[itemize][2][n,repeat][width=2em]
+\setupitemgroup[itemize][3][n,repeat][width=3em]
+\setupitemgroup[itemize][4][n,repeat][width=4em]
+
+\startMPinclusions
+  input ../include/mymacros.mp
+\stopMPinclusions
+
+\startreusableMPgraphic{graph1}
+u := 1cm; % Unit length
+
+path bbox;
+xmin := -5; xmax := 5; ymin := -1.5; ymax := 4.5;
+xdefmin := -4.9; xdefmax := 4.9;
+xscale := 1; yscale := 1;
+ybigticksmod := 2;
+xbigticksmod := 2;
+
+draw squaredblock(u*(xmax-xmin+1.5), u*(ymax-ymin+1.5), u*0.5) shifted (u*(xmin-0.5, ymin-0.5));
+
+% Axes
+pickup pencircle scaled 1bp;
+
+drawoptions(withcolor black);
+drawarrow (xmin*u, 0) -- (xmax*u, 0);
+drawarrow (0, ymin*u) -- (0, ymax*u);
+label.rt("\math{x}", (xmax*u, 0));
+drawoptions(withcolor black);
+label.rt("\math{y}", (0, ymax*u));
+
+bbox = outerboundingbox currentpicture;
+
+pickup pencircle scaled 2bp;
+
+draw function(2, "x", "0.015625*((x+4)**2)*((x-4)**2)" , xdefmin,  xdefmax+0.1, 0.1)   scaled u withcolor black; 
+%0.015625*(x+4)**2*(x-4)**2
+draw ((-1.4641, 0) -- (-1.4641, 3) -- (1.4641, 3) -- (1.4641, 0)) scaled u;
+label.lft("\math{f}", (-2.5u, 2u));
+clip currentpicture to bbox;
+
+pickup pencircle scaled 1bp;
+
+labeloffset := (0.3+0.05)*u;
+
+imax := trunc(yscale*ymax - ahlength/u);
+for i = trunc(yscale*ymin) step 1 until imax :
+  if i == 0 :
+    label.llft("\math{" & decimal(i) & "}",   u*(0, i/yscale));
+  elseif (i mod ybigticksmod) = 0 :
+    draw ytick(0.3, (0, i/yscale)) scaled u;
+    label.lft("\math{" & decimal(i) & "}",   u*(0, i/yscale));
+  else:
+    draw ytick(0.15, (0, i/yscale)) scaled u;
+  fi;
+endfor;
+
+
+imax := trunc(xscale*xmax - ahlength/u);
+for i = trunc(xscale*xmin) step 1 until imax :
+  if i == 0 :
+    label.llft("\math{" & decimal(i) & "}",   u*(0, i/yscale));
+  elseif (i mod xbigticksmod) = 0 :
+    draw xtick(0.3, (i/xscale, 0)) scaled u;
+    label.bot("\math{" & decimal(i) & "}",   u*(i/xscale, 0));
+  else:
+    draw xtick(0.15, (i/xscale, 0)) scaled u;
+  fi;
+endfor;
+
+\stopreusableMPgraphic
+
+\starttext
+
+Hinweis: Achten Sie auf eine übersichtliche und schöne äußere Form, korrekte mathematische Schreibweise und geben Sie bei Textaufgaben kurze Antworten an.
+
+
+\startitemize
+
+\item Von der Funktion \math{f(x) = \text{\digits{0.5}} x^3 - 5 x^2 + 16 x - 16} ist bekannt, dass sie die x-Achse an der Stelle 2 schneidet.
+\startitemize
+\item Bestimmen Sie die Nullstellen von \math{f} mit der entsprechenden Vielfachheit. (BE~5)
+\item Geben Sie die Linearfaktorzerlegung(Faktorisierung) von \math{f} an. (BE~1)
+\item Skizzieren Sie den den Verlauf des Graphen von \math{f} in ein Koordinatensystem mit korrekter Skalierung auf der \math{x}-Achse. (BE~2)
+\stopitemize
+
+
+\item Untersuchen Sie die Funktion \math{f(x) = x^4 - 3x^2}.
+\startitemize
+\item Weisen Sie die Symmetrieeigenschaften des Graphen nach. (BE~1)
+\item Berechnen Sie die Nullstellen von \math{f(x)} und geben Sie deren Vielfachheit an. (BE~4)
+\item Berechnen Sie die Koordinaten der Schnittpunkte des Graphen von \math{f} mit dem Graphen der Funktion \math{g(x) = 2x^2 - 4}. (BE~6)
+\item Zeichnen Sie die Graphen von \math{f} und \math{g} im Bereich \math{\digits -2 \leq x \leq 2} in ein kartesisches Koordinatensystem unter Verwendung der bisherigen Ergebnisse. Achten Sie auf eine übersichtliche Zeichnung. (BE~5)
+\stopitemize
+
+\item Die Abbildung zeigt den obernen Teile des Giebels eines Barock-Hauses (Maße in \unit{m}) Der geschwungene Rand des Giebels wird durch eine ganzrationale Funktion \math{f} 4.Grades beschrieben.\\
+\reuseMPgraphic{graph1}
+\startitemize
+\item Weisen Sie nach, dass \math{f} durch die Funktionsgleichung \math{\frac{1}{64}(x^4 - 32x^2 + 256)} gegeben ist. (BE~5)
+\item Ein Fenster der Höhe \digits{3.0}\unit{m} soll in den Giebel eingepasst werden. Berechnen Sie exakt die maximal mögliche Breite des Fensters. (BE~6)
+
+\stopitemize
+\stopitemize
+
+\stoptext

@@ -1,0 +1,111 @@
+\mainlanguage[de]
+
+\setuplayout
+  [backspace=2.0cm,
+   height=middle,
+   width=middle,
+   leftmargin=1.8cm,
+   footerdistance=0.0cm,
+   rightmargindistance=0.2cm,
+   rightmargin=1.8cm,
+   bottom=0.5cm,
+   leftmargindistance=0.2cm,
+   header=2.3cm,
+   headerdistance=0.5cm,
+   footer=0.5cm,
+   top=0cm,
+   topspace=0.5cm,
+   bottomspace=0.0cm]
+
+\setupformulas[align=right]
+
+\definemeasure[headerimageheight][\dimexpr(\headerheight-2ex)]
+
+\definelayer[sabel]
+
+\startsetups[sabel]
+\setlayerframed[sabel][x=0mm,y=0mm][align=flushright, width=\dimexpression{\paperwidth-3cm}, frame=off]{\externalfigure[../include/MAB.jpg][width=3cm]}
+\stopsetups
+
+\setupbackgrounds[header][text][bottomframe=off,setups=sabel,background=sabel]
+\setuppagenumbering[location={footer,middle},style=\bfc]
+
+\setupfootertexts
+  [BE: 16 Arbeitszeit: 30\unit{Minute}][Viel Erfolg!]
+  [Viel Erfolg!][BE: 16 Arbeitszeit: 30\unit{Minute}]
+
+\setdigitmode 3
+
+\setupitemgroup[itemize][1][n,repeat][width=1em]
+\setupitemgroup[itemize][2][n,repeat][width=2em]
+\setupitemgroup[itemize][3][n,repeat][width=3em]
+\setupitemgroup[itemize][4][n,repeat][width=4em]
+
+\startluacode
+local names = fonts.names
+names.load()
+
+local function font_exists(name)
+  -- names.resolve akzeptiert auch einen einfachen String
+  return names.resolve and names.resolve(name)
+end
+
+local main, bold
+
+-- 1. Versuch: echtes Calibri (z.B. auf Windows)
+if font_exists("calibri") or font_exists("Calibri") then
+  main = "name:calibri"
+  bold = "name:calibribold"
+
+-- 2. Fallback: Carlito (NixOS-Paket)
+elseif font_exists("carlito") or font_exists("Carlito") then
+  main = "name:carlito"
+  bold = "name:carlitobold"
+
+-- 3. Letzte Rettung: IBM Plex Sans
+else
+  main = "name:ibmplexsans"
+  bold = "name:ibmplexsansbold"
+end
+
+context("\\definefont[calibri]["     .. main .. " at 11pt]")
+context("\\definefont[calibribold][" .. bold .. " at 14pt]")
+\stopluacode
+
+\starttext
+% Layoutquelle: input/Kurzarbeit1_VZ2_2526.tex
+% Der Agent ergänzt den Aufgabenteil nach der Deckblattseite.
+% Vorhandene TeX-Implementierung darf gemäß ausgewählten Quality Rules
+% semantisch gleichwertig angepasst werden, auch in Präambel und Deckblatt.
+% Sichtbares Layout, Kopfstruktur und typografische Anmutung bleiben erhalten.
+
+{%
+\calibribold
+\centerline{Fachakademie für Wirtschaft der Mittelstandsakademie Bayern}
+\centerline{1.Kurzarbeit im Wahlpflichtfach Mathematik FHR}
+}
+
+\blank[big]
+
+{%
+\calibri
+\starttabulate[|p(9cm)|p(9cm)|]
+\NC Aufgabenstellung: Bernd Donner \NC Bearbeitungszeit: 30\unit{Minute} \NC\NR
+\NC Gesamtpunktzahl: 16BE          \NC Hilfsmittel: TR, MH     \NC\NR
+\stoptabulate
+
+\blank[big]
+
+\starttabulate[|p(6cm)|p(6cm)|p(6cm)|]
+\NC Name: {\vrule width 5cm height 0mm depth .5pt}
+\NC Datum: {\vrule width 3cm height 0mm depth .5pt}
+\NC Klasse: VZ2 \NC\NR
+\stoptabulate
+}
+
+\page[yes]
+\setupinterlinespace[line=2.8ex]
+
+% Der inhaltliche Dokumentkörper wird vom Agenten erzeugt.
+
+\stoptext

@@ -1,0 +1,113 @@
+\mainlanguage[de]
+
+\setuplayout
+  [backspace=2.0cm,
+   height=middle,
+   width=middle,
+   leftmargin=1.8cm,
+   footerdistance=0.0cm,
+   rightmargindistance=0.2cm,
+   rightmargin=1.8cm,
+   bottom=0.5cm,
+   leftmargindistance=0.2cm,
+   header=2.3cm,
+   headerdistance=0.5cm,
+   footer=0.5cm,
+   top=0cm,
+   topspace=0.5cm,
+   bottomspace=0.0cm]
+
+\setupformulas[align=right]
+
+\definemeasure[headerimageheight][\dimexpr(\headerheight-2ex)]
+
+\definelayer[sabel]
+
+\startsetups[sabel]
+
+\setlayerframed[sabel][x=0mm,y=0mm][align=flushright, width=\dimexpression{\paperwidth-3cm}, frame=off]{\externalfigure[../include/MAB.jpg][width=3cm]}
+
+\stopsetups
+
+\setupbackgrounds[header][text][bottomframe=off,setups=sabel,background=sabel]
+\setuppagenumbering[location={footer,middle},style=\bfc]
+
+\setupfootertexts
+  [BE: 21 Arbeitszeit: 30min][Viel Erfolg!]
+  [Viel Erfolg!][BE: 21 Arbeitszeit: 30min]
+
+\setdigitmode 3
+
+\setupitemgroup[itemize][1][n,repeat][width=1em]
+\setupitemgroup[itemize][2][n,repeat][width=2em]
+\setupitemgroup[itemize][3][n,repeat][width=3em]
+\setupitemgroup[itemize][4][n,repeat][width=4em]
+
+\definefont[calibribold][name:calibrib at 14pt]
+\definefont[calibri][name:calibri at 11pt]
+
+\starttext
+%\showlayout
+%\setupheader[state=stop]
+\setupinterlinespace[line=4.2ex]
+% --- School name (Calibri, 14pt, bold, centered)
+{
+\calibribold
+\centerline{Fachakademie für Wirtschaft der Mittelstandsakademie Bayern}
+\centerline{1.Kurzarbeit im Wahlpflichtfach Mathematik FHR}
+}
+
+\blank[big]
+
+{
+\calibri
+\starttabulate[|p(9cm)|p(9cm)|]
+\NC Aufgabenstellung: Bernd Donner \NC Bearbeitungszeit: 30min \NC\NR
+\NC Gesamtpunktzahl: 21BE          \NC Hilfsmittel: TR, MH     \NC\NR
+\stoptabulate
+
+\blank[big]
+
+\starttabulate[|p(6cm)|p(6cm)|p(6cm)|]
+\NC Name: {\vrule width 5cm height 0mm depth .5pt}
+\NC Datum: 11.11.2025
+\NC Klasse: VZ2 \NC\NR
+
+\stoptabulate
+}
+\page[yes]
+%\setupheader[state=start]
+\setupinterlinespace[line=2.8ex]
+
+Hinweis: Achten Sie auf eine übersichtliche und schöne äußere Form,
+korrekte mathematische Schreibweise und geben Sie bei Textaufgaben kurze
+Antworten an.
+
+\startitemize
+\item Bestimmen Sie die Ableitung für folgende Funktionen:
+
+\startitemize[columns, two, packed][grid=no, inner={\setupinterlinespace[24pt]}]
+      \startitem $f(x) = \frac{2x+1}{2x-1}$  (BE~2) \stopitem
+      \startitem $g(x) = \sin(\frac{1}{x})$  (BE~2) \stopitem
+      \startitem $h(x) = \sqrt{x}$           (BE~2) \stopitem
+\stopitemize
+
+\item In einer großen Stadt breitet sich eine Viruserkrankung aus.
+Die momentane Erkrankungsrate wird modellhaft beschrieben durch die
+Funktion \math{f} mit
+\startformula
+f(t) = 150 t^2 e^{-0.2 t} \qquad\text{für}\qquad t \geq 0
+\stopformula
+Dabei ist \math{t} die Zeit in Wochen seit Beobachtungsbeginn und \math{f(t)}
+die Anzahl der Neuerkrankungen pro Woche.
+
+\startitemize
+\item Zeichnen Sie den Verlauf der Neuerkrankungen zwischen dem
+Beobachtungsbeginn und der 60sten Woche. (BE~6)
+\item In welcher Woche ist nach diesem Modell mit der größten Zahl an
+Neuerkrankungen zu rechnen. Beantworten Sie diese Frage wie im Unterricht
+behandelt oder durch einen gleichwertigen exakten mathematischen Nachweis. (BE~9)
+\stopitemize
+\stopitemize
+\stoptext
+

@@ -1,0 +1,46 @@
+model: gpt-6.1-sol
+
+reasoning:
+  effort: high
+
+processing:
+  mode: standard
+
+task: task.md
+
+template:
+  path: template/template.tex
+
+inputs:
+  - path: input/Kurzarbeit1_VZ2_2526.tex
+    role: reference
+    policy: guidance
+  - path: input/Schulaufgabe001_4FA_2324.tex
+    role: content
+    policy: guidance
+
+references: []
+
+runtime:
+  context_archive: ~/RClone/bleau1975/ChatGPT-Sandbox/context/context-lmtx-ready.tar.xz
+  memory_limit: 4g
+  keep_remote: false
+
+limits:
+  max_agent_turns: 24
+  max_quality_repairs: 4
+  timeout_seconds: 1800
+  max_output_tokens: 18000
+
+review:
+  reproduction: false
+  max_content_repairs: 2
+  max_visual_repairs: 1
+  max_pages: 10
+  pages_per_batch: 2
+
+quality:
+  - dollar_math
+  - semantic_numbers
+  - semantic_math_text
+  - number_with_unit
