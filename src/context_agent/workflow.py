@@ -31,7 +31,9 @@ from context_agent.models import (
 from context_agent.quality_rules import (QualityContext, findings_as_prompt, load_rules, run_checkers,
                                         check_edits, Edit)
 from context_agent.quality_preflight import Preflight, llm_preflight
-from context_agent.requirements import prompt as requirements_prompt, parse_result as parse_requirements
+from context_agent.requirements import (prompt as requirements_prompt,
+                                        parse_result as parse_requirements,
+                                        verified_evidence)
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
 from context_agent.progress import Progress
 from context_agent.scan_markers import visible_scan_markers
@@ -340,10 +342,18 @@ def run_job(
                             raise ContextAgentError(f'Unable to render generated PDF for requirements audit: {exc}') from exc
                         all_findings = []
                         all_uncertainties = []
+                        assert state.main_pdf is not None and state.context_log is not None
+                        assert state.include_snapshot is not None
+                        evidence = verified_evidence(
+                            job, main_pdf=state.main_pdf, context_log=state.context_log,
+                            include_snapshot=state.include_snapshot,
+                            initial_fingerprints=input_fingerprint,
+                        )
                         for offset in range(0, len(pages), job.config.review.pages_per_batch):
                             _require_review_turn(report, job)
                             batch = pages[offset:offset + job.config.review.pages_per_batch]
-                            prompt = requirements_prompt(job, state.main_tex, pages=len(pages))
+                            prompt = requirements_prompt(job, state.main_tex, pages=len(pages),
+                                                         evidence=evidence)
                             prompt += f'\nOutput pages {offset+1} through {offset+len(batch)} of {len(pages)}.'
                             checked = _call_review(session=session, prompt=prompt,
                                 previous_response_id=None, pages=batch, report=report,
@@ -381,12 +391,16 @@ def run_job(
                         state = repair(findings_as_prompt(report.content_findings),
                                        f'repair-requirements-{content_repairs}')
                         continue
-                    if report.content_uncertainties:
-                        if was_quality_repair:
-                            _restore_validated(job.result_dir, last_validated)
-                            state = _artifact_state(job.result_dir)
-                            report.quality_journal.append({'event':'rollback',
-                                 'reason':'requirements verification uncertain'})
+                    if report.content_uncertainties and was_quality_repair:
+                        _restore_validated(job.result_dir, last_validated)
+                        state = _artifact_state(job.result_dir)
+                        report.quality_journal.append({'event':'rollback',
+                             'reason':'requirements verification uncertain'})
+                        report.status = 'needs_review'
+                        break
+                    # Uncertainty is not a verified baseline for refinement, but
+                    # must not suppress read-only checks of the selected rules.
+                    if report.content_uncertainties and not rules:
                         report.status = 'needs_review'
                         break
                 else:
@@ -507,12 +521,11 @@ def run_job(
                             break
                         continue
                 # A successful requirements check is the only accepted rollback baseline.
-                if report.review_uncertainties or report.content_uncertainties:
-                    report.status = 'needs_review'
-                    break
-                # A repaired state may not replace the rollback baseline until
-                # BOTH original requirements AND other selected rules pass.
-                if not was_quality_repair:
+                requirements_uncertain = bool(report.review_uncertainties or
+                                              report.content_uncertainties)
+                # Only a verified requirements pass can become a rollback baseline.
+                # With uncertainty, selected rule checks remain read-only.
+                if not requirements_uncertain and not was_quality_repair:
                     _save_validated(job.result_dir, last_validated, report)
                 # Use one checker pass on the SAME main.tex/include snapshot.
                 if rules:
@@ -564,6 +577,12 @@ def run_job(
                         else:
                             report.review_uncertainties.append('No budget for semantic quality audit')
                         report.findings = _deduplicate(findings)
+                        report.quality_journal.append({
+                            'event': 'checks_completed',
+                            'rules': list(selected),
+                            'source_sha256': _source_digest(state),
+                            'findings': [finding.as_dict() for finding in report.findings],
+                        })
                         current_counts = _quality_counts(report.findings)
                         if was_quality_repair:
                             worsened = {rule: (baseline_quality_counts.get(rule,0), count)
@@ -583,6 +602,14 @@ def run_job(
                             was_quality_repair = False
                             pending_quality_batch = []
                             _save_validated(job.result_dir, last_validated, report)
+                        if requirements_uncertain:
+                            report.quality_journal.append({
+                                'event': 'read_only_quality_audit',
+                                'reason': 'original requirements not fully verified',
+                                'source_sha256': _source_digest(state),
+                            })
+                            report.status = 'needs_review'
+                            break
                         if report.review_uncertainties:
                             report.status = 'needs_review'
                             break

@@ -731,3 +731,27 @@ def test_quality_change_regressing_other_rule_rolls_back(tmp_path,job_factory):
     assert (root/'result/main.tex').read_text().find('BAD') >= 0
     assert any('another selected rule regressed' in e.get('reason','')
                for e in report.quality_journal)
+
+
+def test_uncertain_requirements_still_run_read_only_quality_checks(tmp_path: Path, job_factory) -> None:
+    root = job_factory(tmp_path)
+    configure_bad_word_rule(root)
+
+    class UncertainRequirementsSession(FakeSession):
+        def review_pages(self, prompt, previous_response_id, pages):  # type: ignore[no-untyped-def]
+            assert 'VERIFIZIERTE TECHNISCHE EVIDENZ' in prompt
+            assert 'host_source_files_unchanged_since_start' in prompt
+            assert 'result/include-snapshot.tar.gz' in prompt
+            return self._turn('requirements',
+                 '{"status":"uncertain","findings":[],"uncertainties":["Unklare Layoutvorgabe"]}')
+
+        def run_followup(self, prompt, previous_response_id):  # type: ignore[no-untyped-def]
+            raise AssertionError('No refinement without requirements-validated baseline')
+
+    report = run_job(root, session_factory=lambda job, *_: UncertainRequirementsSession(job))
+    assert report.status == 'needs_review'
+    assert report.quality_repairs == 0
+    assert report.content_uncertainties == ['Unklare Layoutvorgabe']
+    assert any(item.rule_id == 'bad_word' for item in report.findings)
+    assert any(item['event'] == 'read_only_quality_audit' for item in report.quality_journal)
+    assert not (root / 'result/.validated/validation.json').exists()

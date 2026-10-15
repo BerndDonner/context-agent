@@ -1,12 +1,17 @@
 """General independent original-task audit for every generated document."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections.abc import Mapping
+
+import fitz
 from dataclasses import dataclass
 from pathlib import Path
 
 from context_agent.errors import ContextAgentError
+from context_agent.include_sync import read_include_snapshot
 from context_agent.models import QualityFinding, ResolvedJob
 
 
@@ -17,7 +22,72 @@ class RequirementsResult:
     uncertainties: tuple[str, ...]
 
 
-def prompt(job: ResolvedJob, main_tex: Path, *, pages: int) -> str:
+def verified_evidence(
+    job: ResolvedJob,
+    *,
+    main_pdf: Path,
+    context_log: Path,
+    include_snapshot: Path,
+    initial_fingerprints: Mapping[str, str],
+) -> dict[str, object]:
+    """Facts checked by the orchestrator, not guesses by the LLM reviewer.
+
+    Host-side file immutability is not a claim about the copies in the
+    remote container. A valid PDF and a log file do not by themselves prove
+    that recompilation will succeed on every other machine.
+    """
+    files = {
+        'result/main.pdf': main_pdf,
+        'result/context.log': context_log,
+        'result/include-snapshot.tar.gz': include_snapshot,
+    }
+    artifacts = {
+        name: {'exists': path.is_file(),
+               'bytes': path.stat().st_size if path.is_file() else None}
+        for name, path in files.items()
+    }
+    snapshot_count = (len(read_include_snapshot(include_snapshot))
+                      if include_snapshot.is_file() else None)
+    protected = (job.config_path, job.task_path, job.template_path,
+                 *(item.path for item in job.inputs), *job.references)
+    comparisons: dict[str, bool] = {}
+    for path in protected:
+        name = path.relative_to(job.root).as_posix()
+        expected = initial_fingerprints.get(name)
+        comparisons[name] = bool(path.is_file() and expected and
+                                 hashlib.sha256(path.read_bytes()).hexdigest() == expected)
+    fonts: dict[str, list[str]] = {}
+    sample_font_runs: dict[str, list[dict[str, object]]] = {}
+    if main_pdf.is_file():
+        with fitz.open(main_pdf) as pdf:
+            for i, page in enumerate(pdf):
+                fonts[str(i + 1)] = sorted({entry[3] for entry in page.get_fonts()})
+                runs = [
+                    {'text': span['text'][:90], 'font': span['font'],
+                     'size_pt': round(span['size'], 1)}
+                    for block in page.get_text('dict')['blocks']
+                    for line in block.get('lines', [])
+                    for span in line['spans'] if span['text'].strip()
+                ]
+                sample_font_runs[str(i + 1)] = runs[:16]
+            pdf_pages = len(pdf)
+    else:
+        pdf_pages = None
+    return {
+        'files': artifacts,
+        'pdf_page_count': pdf_pages,
+        'include_snapshot_validated_file_count': snapshot_count,
+        'embedded_pdf_font_names_by_page': fonts,
+        'sample_rendered_text_font_runs_by_page': sample_font_runs,
+        'host_source_files_unchanged_since_start': comparisons,
+        'limitations': ('Host input hashes do not establish whether remote temporary copies '
+                        'were modified. The existence of a log and a readable PDF is not '
+                        'an independent proof of reproducibility on another system.'),
+    }
+
+
+def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
+           evidence: dict[str, object] | None = None) -> str:
     task = job.task_path.read_text(encoding='utf-8')
     template = job.template_path.read_text(encoding='utf-8')
     sources = []
@@ -28,18 +98,27 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int) -> str:
         else:
             sources.append(f'{item.relative_path}: {item.role}/{item.policy} (external source)')
     tex = main_tex.read_text(encoding='utf-8')
+    facts = json.dumps(evidence or {}, ensure_ascii=False, indent=2)
     return ("UNABHÄNGIGE REQUIREMENTS VALIDATION. Prüfe ausschließlich gegen den ORIGINALAUFTRAG, "
             "Template und Quellen; NIEMALS allein gegen eine Zwischenfassung. "
             "Kontrolliere Inhalt, Zahlen, Formeln, Vollständigkeit und, soweit die "
             f"{pages} Ausgabeseitenbilder reichen, sichtbares Layout. "
-            "Keine Schreibaktionen. Bei fehlender Evidenz UNCERTAIN statt PASSED. "
+            "Keine Schreibaktionen. Bei fehlender Evidenz zu einer FACHLICHEN "
+            "Anforderung UNCERTAIN statt PASSED. Die untenstehenden, vom Orchestrator "
+            "deterministisch verifizierten Fakten sind verbindliche Prüfevidenz. "
+            "Melde Artefakte, überprüfte Schriftmetadaten oder unveränderte lokale "
+            "Originaldateien NICHT erneut als unbekannt, wenn sie dort bestätigt sind. "
+            "Unterscheide lokale Eingabeintegrität von nicht nachgewiesener "
+            "Integrität entfernter temporärer Kopien. Letztere ist ohne konkrete "
+            "Verdachtsmomente kein eigenständiger Dokumentmangel. "
             "Keine nicht belegten Beanstandungen. JSON ohne Markdown: "
             '{"status":"passed|failed|uncertain","findings":['
             '{"message":"konkreter Fehler","file":"main.tex","line":null}],'
             '"uncertainties":["..." ]}.\n'
             f'ORIGINALAUFTRAG:\n{task}\nTEMPLATE:\n{template}\n'
             f'ORIGINALQUELLEN:\n{chr(10).join(sources)}\n'
-            f'AUSGABESOURCE:\n{tex[:90000]}')
+            f'AUSGABESOURCE:\n{tex[:90000]}\n'
+            f'VERIFIZIERTE TECHNISCHE EVIDENZ:\n{facts}')
 
 
 def parse_result(output: str) -> RequirementsResult:
