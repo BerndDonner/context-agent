@@ -25,7 +25,12 @@ run_context() (
   log_file="$(realpath -m "$log_file")"
   mkdir -p "$(dirname "$log_file")"
 
-  temporary="$(mktemp -d /mnt/data/context-agent-lmtx.XXXXXX)"
+  # Only final, user-visible artifacts belong under /mnt/data. A full LMTX
+  # distribution contains thousands of files; keeping the temporary tree there
+  # can make subsequent Hosted Shell Responses fail with the 1000-file limit
+  # while a detached compilation is still running. /tmp is intentionally used
+  # independently of TMPDIR, which may point back into /mnt/data.
+  temporary="$(mktemp -d /tmp/context-agent-lmtx.XXXXXX)"
   trap 'rm -rf "$temporary"' EXIT
   archive="$temporary/context-lmtx-ready.tar.xz"
   context_root="$temporary/context-lmtx"
