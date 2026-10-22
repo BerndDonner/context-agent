@@ -131,6 +131,10 @@ def test_improve_numeric_regression_rolls_back(tmp_path, job_factory):
     assert any(e['event'] == 'regression_rollback' and
                e['reason_code'] == 'numeric_or_unit_inventory_changed' for e in events)
     assert all('1{,}5' not in json.dumps(e) for e in events)
+    rejected = root / 'result/rejected/0001'
+    assert (rejected / 'metadata.json').is_file()
+    assert '7{,}5' in (rejected / 'main.tex').read_text()
+    assert '7{,}5' in (rejected / 'candidate.diff').read_text()
 
 
 def test_initial_compile_must_not_change_source(tmp_path, job_factory):

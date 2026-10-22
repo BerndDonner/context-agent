@@ -90,6 +90,26 @@ def load_job(job_directory: Path) -> ResolvedJob:
         _require_file(path, f"reference {reference}")
         references.append(path)
 
+    # A reference-based exception to numerical preservation must be explicitly
+    # approved in the versioned job configuration, and must identify one of the
+    # actual provided PDF sources and a valid page. Never trust a model claim.
+    if config.review.reference_resolutions:
+        import fitz
+        for approval in config.review.reference_resolutions:
+            ref = _resolve_inside(root, approval.reference, label="resolution reference")
+            if ref not in references or ref.suffix.lower() != ".pdf":
+                raise ConfigurationError("approved resolution must cite a configured PDF reference")
+            try:
+                with fitz.open(ref) as pdf:
+                    if approval.page > len(pdf):
+                        raise ConfigurationError("approved reference page does not exist")
+            except (RuntimeError, OSError) as exc:
+                raise ConfigurationError("cannot verify approved reference PDF") from exc
+            if source_path is None or approval.source_line > len(source_path.read_text(encoding="utf-8").splitlines()) or approval.before not in source_path.read_text(encoding="utf-8").splitlines()[approval.source_line - 1]:
+                raise ConfigurationError("approved resolution does not match source_line")
+            if approval.before == approval.after:
+                raise ConfigurationError("resolution must name a real source change")
+
     include_dir = root / "include"
     if not include_dir.exists():
         include_dir.mkdir()

@@ -20,6 +20,7 @@ from context_agent.errors import ContextAgentError
 from context_agent.job import load_job, prepare_result_directory
 from context_agent.include_sync import IncludeTransaction, read_include_snapshot
 from context_agent.improvement import improvement_guard, improvement_diff
+from context_agent.rejected import preserve_rejected
 from context_agent.models import (
     AgentTurn,
     ContentPolicy,
@@ -221,6 +222,21 @@ def run_job(
             entry['findings'] = findings
         if worsened is not None:
             entry['worsened'] = worsened
+        # Preserve the candidate before any rollback restores the accepted
+        # snapshot. These files are diagnostic, never a successful result.
+        try:
+            rejected_dir = preserve_rejected(
+                job.result_dir, reason_code=reason_code,
+                accepted_tex=(job.result_dir / '.protected' / 'main.tex'
+                              if (job.result_dir / '.protected' / 'main.tex').is_file()
+                              else job.result_dir / '.validated' / 'main.tex'))
+        except (OSError, ValueError, UnicodeError) as exc:
+            rejected_dir = None
+            record_event(job.result_dir / 'execution-events.jsonl',
+                         'rejected_preservation_failed', phase=phase_state,
+                         reason_code=reason_code, exception_type=type(exc).__name__)
+        if rejected_dir:
+            entry['rejected_candidate'] = rejected_dir
         report.quality_journal.append(entry)
         rejected = _artifact_state(job.result_dir)
         rejected_sha256 = (_source_digest(rejected)
@@ -232,7 +248,8 @@ def run_job(
                      numeric_difference_count=len(differences) if differences is not None else None,
                      finding_count=len(findings) if findings is not None else None,
                      worsened_rule_count=len(worsened) if worsened is not None else None,
-                     exception_type=exception_type)
+                     exception_type=exception_type,
+                     rejected_candidate_saved=bool(rejected_dir))
 
     def finish(state: ArtifactState) -> RunReport:
         if job.source_path is not None and state.main_tex is not None:
@@ -431,8 +448,10 @@ def run_job(
                 report.content_uncertainties = list(source_uncertainties) if original_tex is not None else []
                 if original_tex is not None:
                     assert state.main_tex is not None
-                    guard = improvement_guard(original_tex,
-                                              state.main_tex.read_text(encoding='utf-8'))
+                    guard = improvement_guard(
+                        original_tex, state.main_tex.read_text(encoding='utf-8'),
+                        approved_resolutions=[item.model_dump() for item in
+                                              job.config.review.reference_resolutions])
                     if guard:
                         log_rollback('protected numeric content changed',
                                      reason_code='numeric_or_unit_inventory_changed',
@@ -1341,6 +1360,13 @@ def _finish(report: RunReport, state: ArtifactState, report_path: Path) -> RunRe
     diff_path = report_path.parent / 'changes.diff'
     if report.mode == 'improve' and diff_path.is_file():
         report.artifacts['changes.diff'] = str(diff_path)
+    rejected_root = report_path.parent / 'rejected'
+    if rejected_root.is_dir():
+        for directory in sorted(rejected_root.iterdir()):
+            if directory.is_dir():
+                manifest = directory / 'metadata.json'
+                if manifest.is_file():
+                    report.artifacts[f'rejected/{directory.name}/metadata.json'] = str(manifest)
     if (report.content_uncertainties or report.review_uncertainties or
             report.quality_uncertainties):
         unique = list(dict.fromkeys(report.content_uncertainties +

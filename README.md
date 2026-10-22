@@ -264,3 +264,49 @@ Der `quality_journal` enthält `quality_group_satisfied`,
 `quality_group_no_progress` und `quality_groups_exhausted`; für No-ops gibt es
 auch ein datensparsames `execution-events.jsonl`-Ereignis. Die alten Prüfungen
 und `mode: create` werden weiterhin unterstützt.
+
+
+### Improve-Regression, Belegfreigaben und Diagnose (0.9.6)
+
+Der Zahlen-/Einheitenschutz vergleicht die strukturiert erkannten Größen
+**innerhalb geänderter TeX-Passagen**. Bekannte alternative Schreibweisen
+werden gleichgesetzt, nicht aber unterschiedliche Werte oder physikalische
+Einheiten. Dies ersetzt keine unabhängige Requirements-Prüfung.
+
+Ein mehrdeutiger Originalscan darf nur mit expliziter, bewusst im Job
+versionierter Freigabe aufgelöst werden. Beispiel für `review:` (die Einträge
+sind **keine** automatisch gesetzten Defaults):
+
+```yaml
+review:
+  reproduction: false
+  reference_resolutions:
+    - before: '1,\ 6\ \%'
+      after: '\dn{1.6}\unit{Percent}'
+      reference: 'input/Übungen Einführung Messtechnik.pdf'
+      page: 2
+      source_line: 195
+      note: 'Originalscan kontrolliert; 1,6 % eindeutig lesbar'
+      approved: true
+```
+
+Die PDF-Referenz muss bereits unter `references:` im Job stehen. `page` und
+`source_line` werden validiert; der TeX-Ausschnitt muss exakt stimmen.
+**Ein Agent darf sich solche Freigaben nicht selbst ausdenken.** Ohne diesen
+Eintrag bleibt die konkrete Stelle geschützt und das Ergebnis gegebenenfalls
+`needs_review`. Referenzfreigaben erlauben keine allgemeinen Wertänderungen.
+
+Ein vom Regression Gate abgelehnter Zwischenstand wird unter
+`result/rejected/0001/` usw. mit `main.tex`, `main.pdf`, `context.log`,
+`include-snapshot.tar.gz`, `candidate.diff` und `metadata.json` aufbewahrt,
+sofern die Artefakte vorhanden sind. Der Verzeichnisname bezeichnet einen
+**nicht validierten** Kandidaten und darf nicht als Ergebnis übernommen werden.
+
+Für `mode: improve` verwendet der unabhängige Requirements-Reviewer das
+**vollständige** Unified-Diff einschließlich Quellkontext statt immer die zwei
+vollständigen TeX-Dateien zu übertragen. Die originalen Aufgabenstellungen,
+Template-Vorgaben, verifizierte Evidenz, Scanreferenzen und PDF-Seitenbilder
+bleiben Bestandteil der Kontrolle. Diese Optimierung wurde offline geprüft;
+der tatsächliche API-Verbrauch muss beim nächsten Hosted-Lauf gemessen werden.
+
+Siehe [CHANGELOG.md](CHANGELOG.md) für die vollständige Versionshistorie.

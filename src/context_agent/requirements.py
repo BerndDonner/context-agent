@@ -105,6 +105,39 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
     from context_agent.improvement import improvement_diff
     changed = (improvement_diff(baseline, tex) if baseline is not None else "")
     facts = json.dumps(evidence or {}, ensure_ascii=False, indent=2)
+    if baseline is not None:
+        # An improve audit is a DELTA audit, not re-transcription of the whole
+        # document. The exact changed source passages include old/new context.
+        # The independent reviewer sees real output page images separately.
+        from context_agent.improvement import improvement_diff
+        complete_diff = improvement_diff(baseline, tex, max_lines=1000000)
+        compact_evidence = dict(evidence or {})
+        # Images, not thousands of repeated extracted font spans, provide the
+        # visual evidence. Keep the checked page font names and host integrity.
+        compact_evidence.pop('sample_rendered_text_font_runs_by_page', None)
+        return (
+            'UNABHÄNGIGE REQUIREMENTS VALIDATION – IMPROVE-REGRESSIONS-AUDIT. Prüfe ausschließlich '
+            'durch folgende Quelländerungen neu eingeführte Inhalts-, Zahlen-, '
+            'Einheiten-, Formel- und Layoutfehler. Die ausgewählten Quality-Checker '
+            'prüfen den Grad der Formatkorrektur getrennt. Alte Scanunsicherheiten '
+            'und noch offene Formatierungsziele sind KEINE neuen Regressionen. '
+            'Prüfe das beigefügte PDF-Seitenbild gegen den ORIGINALAUFTRAG und '
+            'die Quelle. Die vollständigen ORIGINAL-/NEU-Passagen sind im '
+            'unverkürzten Unified-Diff enthalten (mit Kontext). '
+            'Für jeden vermuteten Fehler liefere exakte original_excerpt und '
+            'updated_excerpt aus demselben geänderten Diff-Hunk. '
+            'Ohne nachweisbare neue Quellabweichung nutze uncertainties, niemals '
+            'eine erfundene Regression. Technische Fakten aus EVIDENZ gelten; '
+            'wiederhole keine dort widerlegten Verfügbarkeitsbedenken. '
+            'JSON ohne Markdown: '
+            '{"status":"passed|failed|uncertain","findings":[],"uncertainties":[],"regressions":'
+            '[{"message":"...","original_excerpt":"...","updated_excerpt":"..."}]}\n'
+            f'MODUS: improve\nORIGINALAUFTRAG:\n{task}\n'
+            f'VERBINDLICHES TEMPLATE:\n{template}\n'
+            f'QUELLEINGABEN:\n{chr(10).join(sources)}\n'
+            f'VOLLSTÄNDIGES ÄNDERUNGSDIFF:\n{complete_diff}\n'
+            f'VERIFIZIERTE EVIDENZ:\n{json.dumps(compact_evidence, ensure_ascii=False)}'
+        )
     improve_instruction = ("IMPROVE-DELTA-AUDIT: Bewerte AUSSCHLIESSLICH NEU durch die gezeigten "
         "ÄNDERUNGEN eingeführte inhaltliche oder Layout-Regressionen. "
         "Unveränderte Ausgangsmängel, vorhandene Scanunsicherheiten und noch "

@@ -1,92 +1,160 @@
-"""Conservative numerical and unit regression checks for ``mode: improve``.
+"""Evidence-oriented protection of numerical content in ``mode: improve``.
 
-Exact decimal values (not binary floats) are compared independently from known
-physical units.  This is not a TeX parser or a proof of document equivalence:
-unknown expressions still require the independent requirements review.
+Compare quantities *in their changed source regions*, not unordered inventories
+of the entire file. This recognizes TeX formatting aliases without treating a
+new value, changed sign or swapped unit as an innocent normalization. It is not
+an arbitrary TeX evaluator: uncertain constructions require explicit approval
+and independent requirements review.
 """
 from __future__ import annotations
 
-from collections import Counter
-from decimal import Decimal
-from difflib import unified_diff
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher, unified_diff
+from collections.abc import Mapping, Sequence
 import re
 
-# A digit directly before a physical unit (``200Ω`` or ``7,5V``) is a
-# complete number.  Do not require a word boundary *after* the number.
-# A leading letter/backslash excludes indices and control-sequence names.
-_NUM = re.compile(r'(?<![\w\\])[-+]?(?:\d+\s*\{,\}\s*\d+|\d+[.,]\d+|\d+)(?!\d)')
-_DN = re.compile(r'\\+dn\s*\{\s*([-+]?(?:\d+(?:[.,]\d+)?))\s*\}')
-_DECIMAL_BRACES = re.compile(r'(\d+)\s*\{,\}\s*(\d+)')
-# Only known units are compared; arbitrary textual suffixes are not units.
-_UNIT_NAMES = {
+_DN = re.compile(r'\\+dn\s*\{\s*([-+]?\d+(?:[.,]\d+)?)\s*\}')
+_BRACES = re.compile(r'(\d+)\s*\{,\}\s*(\d+)')
+# A TeX control-space after a comma is ambiguous unless explicitly resolved.
+_NUMBER = re.compile(
+    r'(?<![\w\\])(?P<sign>[+-]?\s*)(?P<whole>\d+)'
+    r'(?:(?P<sep>\{,\}|[.,]|,\s*\\\s+)(?P<fract>\s*\d+))?'
+)
+
+# Explicit spelling aliases only. No automatic SI conversion: 1000 mV is not
+# silently identified with 1 V, and a prefix change is always conspicuous.
+_UNIT_ALIASES = {
     '%': '%', 'Percent': '%', 'Degree': 'deg', '°': 'deg',
     'V': 'V', 'Volt': 'V', 'mV': 'mV', 'MilliVolt': 'mV',
-    'kV': 'kV', 'KiloVolt': 'kV', 'uV': 'uV', 'MicroVolt': 'uV',
-    'µV': 'uV', 'μV': 'uV', 'KiloOhm': 'kOhm',
+    'kV': 'kV', 'KiloVolt': 'kV',
+    'uV': 'uV', 'µV': 'uV', 'μV': 'uV', 'MicroVolt': 'uV',
+    'microvolt': 'uV', 'mu V': 'uV',
     'A': 'A', 'Ampere': 'A', 'mA': 'mA', 'MilliAmpere': 'mA',
     'Ω': 'Ohm', 'Ohm': 'Ohm', 'kΩ': 'kOhm', 'kOhm': 'kOhm',
+    'KiloOhm': 'kOhm', 'Kiloohm': 'kOhm',
     'Hz': 'Hz', 'Hertz': 'Hz', 'kHz': 'kHz', 'KiloHertz': 'kHz',
     's': 's', 'Second': 's', 'ms': 'ms', 'MilliSecond': 'ms',
-    'min': 'min', 'Minute': 'min',
+    'min': 'min', 'Minute': 'min', 'day': 'day', 'days': 'day',
+    'Tag': 'day', 'Tage': 'day',
 }
-_UNIT_PART = '|'.join(re.escape(key) for key in sorted(_UNIT_NAMES, key=len, reverse=True))
-# The permitted spacing is typographic spacing, not arbitrary TeX code.
-_SPACING = r'(?:[ \t]|\\+,|\\+thinspace|~)*'
+_RAW_UNIT = '|'.join(re.escape(u) for u in sorted(_UNIT_ALIASES, key=len, reverse=True))
+_SPACE = r'(?:[ \t]|\\,|\\thinspace|\\[ ]|~)*'
 _UNIT = re.compile(
-    _SPACING + r'(?:\\+unit\s*\{\s*(' + _UNIT_PART + r')\s*\}'
-    + r'|\\+mathrm\s*\{\s*(' + _UNIT_PART + r')\s*\}'
-    + r'|(\\+%)|(\\+m\s*\{\s*\\+mu\s*\}\s*V)'
-    + r'|(' + _UNIT_PART + r')(?![A-Za-z0-9_]))'
+    _SPACE + r'(?:\\+unit\s*\{(?P<unit>[^{}]+)\}'
+    r'|(?P<kohm>\\+(?:mathrm|text)\{k\}\s*\\Omega)'
+    r'|(?P<hyphenk>-kΩ)'
+    r'|\\+(?:mathrm|text)\s*\{(?P<rm>[^{}]+)\}'
+    r'|(?P<mu>\\m\s*\{\\mu\}\s*V|\\mu\s*V)'
+    r'|(?P<omega>\\+Omega)'
+    r'|(?P<percent>\\+%)'
+    r'|(?P<raw>' + _RAW_UNIT + r')(?![A-Za-z0-9_]))'
 )
 
 
-def _normalized_source(tex: str) -> str:
-    # Keep command wrapping out of the numerical comparison.  The original
-    # source itself is never modified by this normalisation.
-    tex = _DN.sub(lambda m: m.group(1), tex)
-    return _DECIMAL_BRACES.sub(r'\1.\2', tex)
+@dataclass(frozen=True)
+class Quantity:
+    number: str
+    unit: str | None
 
 
-def _decimal(number: str) -> str:
-    return str(Decimal(number.replace(',', '.').replace(' ', '')).normalize())
+def _units(name: str) -> str | None:
+    name = name.strip()
+    return _UNIT_ALIASES.get(name)
 
 
-def _numbers_and_units(tex: str) -> tuple[Counter[str], Counter[tuple[str, str]]]:
-    normalized = _normalized_source(tex)
-    values: Counter[str] = Counter()
-    units: Counter[tuple[str, str]] = Counter()
-    for match in _NUM.finditer(normalized):
-        value = _decimal(match.group())
-        values[value] += 1
-        unit = _UNIT.match(normalized, match.end())
-        if unit is not None:
-            unit_name = next((group for group in unit.groups() if group), None)
-            if unit_name is not None:
-                canonical = ('uV' if unit_name.startswith('\\m') else
-                             _UNIT_NAMES.get(unit_name, '%'))
-                units[(value, canonical)] += 1
-    return values, units
+def _semantic_quantities(source: str) -> list[Quantity]:
+    source = _DN.sub(lambda m: m.group(1), source)
+    source = _BRACES.sub(r'\1.\2', source)
+    result: list[Quantity] = []
+    for match in _NUMBER.finditer(source):
+        raw_sign = match.group('sign').strip()
+        whole = match.group('whole')
+        sep = match.group('sep')
+        fraction = match.group('fract')
+        if fraction is None:
+            number = whole
+        elif sep is not None and '\\' in sep:
+            # Don't guess what a separated comma means. It is not an ordinary
+            # decimal number until an externally approved resolution exists.
+            number = 'ambiguous:' + whole + ',' + fraction.strip()
+        else:
+            number = whole + '.' + fraction.strip()
+        if not number.startswith('ambiguous:'):
+            try:
+                number = str(Decimal((raw_sign or '') + number).normalize())
+            except InvalidOperation:
+                number = 'invalid:' + number
+        unit_match = _UNIT.match(source, match.end())
+        unit = None
+        if unit_match is not None:
+            group = unit_match.groupdict()
+            if group['mu']:
+                unit = 'uV'
+            elif group['kohm'] or group['hyphenk']:
+                unit = 'kOhm'
+            elif group['omega']:
+                unit = 'Ohm'
+            elif group['percent']:
+                unit = '%'
+            else:
+                spelling = group['unit'] or group['rm'] or group['raw']
+                unit = _units(spelling) if spelling is not None else None
+                if spelling is not None and unit is None:
+                    unit = 'unknown:' + spelling.strip()
+        result.append(Quantity(number, unit))
+    return result
 
 
-def improvement_guard(original: str, updated: str) -> list[str]:
-    """Reject changed numeric values or changed *recognized* physical units.
+def _changed_regions(original: str, updated: str) -> list[tuple[int, str, str]]:
+    before, after = original.splitlines(keepends=True), updated.splitlines(keepends=True)
+    result = []
+    for op, i, j, k, l in SequenceMatcher(
+            None, before, after, autojunk=False).get_opcodes():
+        if op != 'equal':
+            result.append((i + 1, ''.join(before[i:j]), ''.join(after[k:l])))
+    return result
 
-    Unrecognized unit syntax does not authorize a conversion: it is checked by
-    the independent requirements audit. Values in protected source remain
-    exact, including repeated values and signs.
+
+def _apply_approved_resolutions(source: str, destination: str, start_line: int,
+                                approvals: Sequence[Mapping[str, object]] | None) -> str:
+    """Make only *explicitly approved* reference resolutions comparable.
+
+    The workflow validates the approval manifest and reference before calling.
+    Each exact pair must be present in the changed region; no fuzzy matching.
     """
-    before, before_units = _numbers_and_units(original)
-    after, after_units = _numbers_and_units(updated)
-    results: list[str] = []
-    if before - after:
-        results.append('Original numeric literals missing: ' + str(dict(before - after)))
-    if after - before:
-        results.append('New numeric literals: ' + str(dict(after - before)))
-    if before_units != after_units:
-        results.append('Recognized quantity units changed: missing=' +
-                       str(dict(before_units - after_units)) + ' new=' +
-                       str(dict(after_units - before_units)))
-    return results
+    for approval in approvals or ():
+        previous, replacement = approval.get('before'), approval.get('after')
+        source_line = approval.get('source_line')
+        lines = source.splitlines()
+        anchored = (type(source_line) is int and
+                    start_line <= source_line < start_line + len(lines) and
+                    isinstance(previous, str) and
+                    previous in lines[source_line - start_line])
+        target_lines = destination.splitlines()
+        if (anchored and isinstance(replacement, str) and
+                (replacement in target_lines[source_line - start_line]
+                 if len(target_lines) == len(lines) else replacement in destination)):
+            source = source.replace(previous, replacement, 1)
+    return source
+
+
+def improvement_guard(original: str, updated: str, *,
+                      approved_resolutions: Sequence[Mapping[str, object]] | None = None) -> list[str]:
+    """Conservatively reject changed values/signs/units in modified passages.
+
+    Approval manifests authorize exact source spellings, not arbitrary number
+    changes. The independent requirements reviewer still checks document meaning.
+    """
+    problems: list[str] = []
+    for index, (start_line, old, new) in enumerate(_changed_regions(original, updated), 1):
+        protected_old = _apply_approved_resolutions(old, new, start_line, approved_resolutions)
+        previous = _semantic_quantities(protected_old)
+        current = _semantic_quantities(new)
+        if previous != current:
+            problems.append(f'Changed region {index}: protected quantities differ: '
+                            f'before={previous!r}; after={current!r}')
+    return problems
 
 
 def improvement_diff(original: str, updated: str, *, max_lines: int = 500) -> str:

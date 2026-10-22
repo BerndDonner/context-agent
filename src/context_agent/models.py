@@ -81,6 +81,19 @@ class ProcessingSpec(BaseModel):
     mode: Literal["auto", "standard", "flex", "batch"] = "auto"
 
 
+class ReferenceResolutionSpec(BaseModel):
+    """Explicit human-approved interpretation of an ambiguous reference scan."""
+    model_config = ConfigDict(extra="forbid")
+
+    before: str = Field(min_length=1)
+    after: str = Field(min_length=1)
+    reference: str = Field(min_length=1)
+    page: int = Field(ge=1)
+    source_line: int = Field(ge=1)
+    note: str = Field(min_length=1)
+    approved: Literal[True]
+
+
 class ReviewSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -90,6 +103,7 @@ class ReviewSpec(BaseModel):
     max_visual_repairs: int = Field(default=2, ge=0, le=20)
     max_pages: int = Field(default=40, ge=1, le=200)
     pages_per_batch: int = Field(default=4, ge=1, le=8)
+    reference_resolutions: list[ReferenceResolutionSpec] = Field(default_factory=list)
 
 
 class JobConfig(BaseModel):
@@ -114,6 +128,8 @@ class JobConfig(BaseModel):
     def reject_incompatible_batch(self) -> "JobConfig":
         if self.mode == JobMode.IMPROVE and self.source is None:
             raise ValueError("mode=improve requires source.path")
+        if self.mode == JobMode.CREATE and self.review.reference_resolutions:
+            raise ValueError("reference resolutions are only valid in improve mode")
         if self.mode == JobMode.CREATE and self.source is not None:
             raise ValueError("source is only valid with mode=improve")
         if self.mode == JobMode.IMPROVE and self.review.reproduction:
