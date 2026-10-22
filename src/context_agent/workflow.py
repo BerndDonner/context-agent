@@ -181,6 +181,7 @@ def run_job(
             setattr(report, name, [QualityFinding(**value) for value in values])
         report.content_uncertainties = list(old_report.get('content_uncertainties', []))
         report.review_uncertainties = list(old_report.get('review_uncertainties', []))
+        report.quality_uncertainties = list(old_report.get('quality_uncertainties', []))
 
     def checkpoint(phase: str) -> None:
         nonlocal phase_state
@@ -408,7 +409,9 @@ def run_job(
             quality_repairs = 0
             content_repairs = 0
             visual_repairs = 0
-            quality_seen: set[str] = set()
+            # A failed/no-op attempt belongs to this source revision AND this rule group.
+            # A no-op in one group must never block another selected group.
+            quality_seen: set[tuple[str, tuple[str, ...]]] = set()
             # An uncertain original is a protected comparison state, NOT an
             # independently requirements-validated document.
             last_validated = job.result_dir / ('.protected' if original_tex is not None
@@ -423,6 +426,7 @@ def run_job(
                     break
                 report.review_findings = []
                 report.review_uncertainties = []
+                report.quality_uncertainties = []
                 report.content_findings = []
                 report.content_uncertainties = list(source_uncertainties) if original_tex is not None else []
                 if original_tex is not None:
@@ -719,11 +723,20 @@ def run_job(
                                 prompt=_quality_semantic_prompt(rules, state.main_tex, findings),
                                 previous_response_id=None, report=report,
                                 transcript_path=transcript_path, phase='quality-semantic-check')
-                            semantic, dismissed = _quality_semantic_findings(
-                                review.output_text, selected, len(findings))
+                            semantic, dismissed, semantic_uncertainties = _quality_semantic_findings(
+                                review.output_text, selected, len(findings),
+                                state.main_tex.read_text(encoding='utf-8'),
+                                dollar_lint_executed=runtime_dollar_checked)
                             findings = [finding for index, finding in enumerate(findings)
                                 if index not in dismissed or finding.certainty == 'confirmed']
                             findings.extend(semantic)
+                            report.quality_uncertainties = semantic_uncertainties
+                            if semantic_uncertainties:
+                                report.quality_journal.append({
+                                    'event': 'semantic_uncertainties_recorded',
+                                    'source_sha256': _source_digest(state),
+                                    'uncertainties': semantic_uncertainties,
+                                })
                         else:
                             report.review_uncertainties.append('No budget for semantic quality audit')
                         findings, superseded = reconcile_availability_warnings(
@@ -788,20 +801,33 @@ def run_job(
                         if report.review_uncertainties and original_tex is None:
                             report.status = 'needs_review'
                             break
-                        if report.findings:
-                            if quality_repairs >= job.config.limits.max_quality_repairs or not _may_turn(report, job):
+                        # Each plan group is considered separately. An already clean
+                        # group (e.g. dynamic dollar_math reports zero violations)
+                        # requires NO model repair and consumes no repair budget.
+                        digest = _source_digest(state)
+                        for batch in plan:
+                            if not any(f.rule_id in batch for f in report.findings):
+                                report.quality_journal.append({
+                                    'event': 'quality_group_satisfied',
+                                    'source_sha256': digest, 'batch': list(batch),
+                                })
+                        pending_batch = next((list(batch) for batch in plan
+                            if any(f.rule_id in batch for f in report.findings)
+                            and (digest, tuple(batch)) not in quality_seen), None)
+                        if report.findings and pending_batch is None:
+                            report.status = 'needs_review'
+                            report.quality_journal.append({
+                                'event': 'quality_groups_exhausted',
+                                'source_sha256': digest,
+                                'unresolved_rules': sorted({f.rule_id for f in report.findings}),
+                            })
+                            break
+                        if pending_batch is not None:
+                            if (quality_repairs >= job.config.limits.max_quality_repairs
+                                    or not _may_turn(report, job)):
                                 report.status = 'needs_review'
                                 break
-                            digest = _source_digest(state)
-                            if digest in quality_seen:
-                                report.status = 'needs_review'
-                                report.quality_journal.append({'event':'no_progress','source_sha256':digest})
-                                break
-                            quality_seen.add(digest)
-                            # Batch only rules selected by the LLM plan; do not
-                            # run new rules or blindly apply overlapping edits.
-                            pending_batch = next((batch for batch in plan if any(
-                                f.rule_id in batch for f in report.findings)), list(selected))
+                            quality_seen.add((digest, tuple(pending_batch)))
                             batch_findings = [f for f in report.findings if f.rule_id in pending_batch]
                             baseline_quality_counts = current_counts
                             pending_quality_batch = pending_batch
@@ -852,12 +878,23 @@ def run_job(
                                 report.status = 'needs_review'
                                 break
                             if _source_digest(state) == digest:
+                                # A no-op is local to the attempted group. Keep its
+                                # unresolved findings but try other plan groups. A
+                                # revisited (source digest, group) is never retried.
                                 log_rollback('quality repair made no effective source/include change',
                                              reason_code='no_effective_change')
+                                report.quality_journal.append({
+                                    'event': 'quality_group_no_progress',
+                                    'source_sha256': digest, 'batch': pending_batch,
+                                })
+                                record_event(job.result_dir / 'execution-events.jsonl',
+                                             'quality_group_no_progress', phase='quality-refinement',
+                                             source_sha256=digest,
+                                             rule_count=len(pending_batch))
                                 _restore_validated(job.result_dir, last_validated)
                                 state = _artifact_state(job.result_dir)
-                                report.status = 'needs_review'
-                                break
+                                pending_quality_batch = []
+                                continue
                             was_quality_repair = True
                             checkpoint('quality-repaired-unvalidated')
                             continue
@@ -865,7 +902,7 @@ def run_job(
                     _save_validated(job.result_dir, last_validated, report)
                 # No selected-rule violations remain.
                 # Uncertainty is NOT proof of fidelity. Do not change Git files.
-                if (report.review_uncertainties or report.content_uncertainties or
+                if (report.quality_uncertainties or report.review_uncertainties or report.content_uncertainties or
                     (original_tex is not None and baseline_uncertainties) or
                     (original_tex is not None and report.content_findings)):
                     progress('Offene Quellunsicherheiten: manuelle Prüfung erforderlich')
@@ -961,24 +998,38 @@ def _quality_semantic_prompt(rules, source: Path,
                              candidates: list[QualityFinding]) -> str:
     return ("Unabhängige QUALITÄTSPRÜFUNG auf dem Satzquelltext. "
             "Nutze ausschließlich die explizit ausgewählten Regeln. "
-            "Die Python-Erkennung liefert unten nummerierte Kandidaten, KEINE "
-            "automatisch sicheren Verstöße. Prüfe sie im Kontext und "
-            "dismisse nachweislich harmlose Kandidaten anhand des 0-basierten Index. "
-            "Füge ggf. weitere semantische Befunde hinzu. "
-            "Kein Quellcodewechsel, keine Shell. Keine zusätzlichen Regeln aktivieren. "
-            "Nur belegbare Befunde; unklare Dinge bleiben Warnungen. "
+            "Prüfe Python-Kandidaten im Kontext und dismiss nachweislich harmlose "
+            "Kandidaten (0-basierter Index). "
+            "Jeder zusätzliche Finding muss einen konkreten VERIFIZIERBAREN "
+            "Regelverstoß der angegebenen Regel mit gültiger Quelltextzeile und "
+            "wörtlichem evidence-Quellausschnitt belegen. "
+            "Ordne Befunde nicht nach Ähnlichkeit zu: Eine unklare Einheit ist "
+            "KEIN dollar_math-Verstoß. "
+            "Fehlende Quellen, mehrdeutige Scanstellen und nicht belegbare Aussagen "
+            "gehören ausschließlich in uncertainties, NICHT in findings. "
+            "dollar_math wird durch den ausgeführten dynamischen Linter entschieden; "
+            "erfinde keine zusätzlichen Dollar-Verstöße. "
+            "Kein Quellcodewechsel, keine Shell, keine neuen Regeln. "
             "JSON ohne Markdown: {\"findings\":[{\"rule_id\":\"id\", "
             "\"message\":\"...\",\"certainty\":\"confirmed|candidate|warning\", "
-            "\"severity\":\"error|warning\",\"line\":12}], "
-            "\"dismissed_candidates\":[0],\"uncertainties\":[]}.\n"
+            "\"severity\":\"error|warning\",\"line\":12,"
+            "\"evidence\":\"exakter Text aus Zeile 12\"}], "
+            "\"dismissed_candidates\":[0],\"uncertainties\":[]} .\n"
             + '\n'.join(r.llm_description() for r in rules)
             + '\nPYTHON-KANDIDATEN (0-basiert):\n'
             + json.dumps([f.as_dict() for f in candidates], ensure_ascii=False)
             + '\nQUELLTEXT:\n' + source.read_text(encoding='utf-8')[:100000])
 
 
-def _quality_semantic_findings(output: str, selected: tuple[str, ...],
-                               candidate_count: int) -> tuple[list[QualityFinding], set[int]]:
+def _quality_semantic_findings(
+    output: str, selected: tuple[str, ...], candidate_count: int,
+    source: str, *, dollar_lint_executed: bool = False,
+) -> tuple[list[QualityFinding], set[int], list[str]]:
+    """Only evidence-anchored rule findings enter the repair queue.
+
+    Unanchored/misclassified model opinions remain review uncertainties and
+    cannot steal the first rule's ID or trigger a pointless repair.
+    """
     import re
     value = output.strip()
     if value.startswith('```'):
@@ -987,25 +1038,39 @@ def _quality_semantic_findings(output: str, selected: tuple[str, ...],
         data = json.loads(value)
     except ValueError as exc:
         raise ContextAgentError('semantic quality checker returned invalid JSON') from exc
-    if not isinstance(data, dict) or not isinstance(data.get('findings'),list) or not isinstance(data.get('uncertainties'),list):
+    if (not isinstance(data, dict) or not isinstance(data.get('findings'), list)
+            or not isinstance(data.get('uncertainties'), list)):
         raise ContextAgentError('malformed semantic quality report')
     dismissed = data.get('dismissed_candidates', [])
-    if not isinstance(dismissed,list) or any(type(i) is not int or i < 0 or i >= candidate_count for i in dismissed):
+    if (not isinstance(dismissed, list) or any(type(i) is not int or
+            i < 0 or i >= candidate_count for i in dismissed)):
         raise ContextAgentError('quality audit attempted invalid candidate dismissal')
-    findings = []
+    findings: list[QualityFinding] = []
+    uncertainties = [u for u in data['uncertainties'] if isinstance(u, str) and u.strip()]
+    lines = source.splitlines()
     for item in data['findings']:
-        if not isinstance(item,dict) or item.get('rule_id') not in selected or not isinstance(item.get('message'),str):
+        if not isinstance(item, dict) or item.get('rule_id') not in selected or not isinstance(item.get('message'), str):
             raise ContextAgentError('semantic checker returned an unselected rule')
-        if item.get('certainty') not in ('confirmed','candidate','warning') or item.get('severity') not in ('error','warning'):
+        if item.get('certainty') not in ('confirmed', 'candidate', 'warning') or item.get('severity') not in ('error', 'warning'):
             raise ContextAgentError('semantic checker returned invalid finding classification')
-        findings.append(QualityFinding(item['rule_id'],item['message'],
-              file='main.tex',line=item.get('line') if isinstance(item.get('line'),int) else None,
-              certainty=item['certainty'],severity=item['severity']))
-    for uncertainty in data['uncertainties']:
-        if isinstance(uncertainty,str):
-            findings.append(QualityFinding(selected[0], uncertainty,
-                                           certainty='warning',severity='warning'))
-    return findings, set(dismissed)
+        rule_id, message = item['rule_id'], item['message']
+        line, evidence = item.get('line'), item.get('evidence')
+        if (rule_id == 'dollar_math' and dollar_lint_executed):
+            # The dynamic ConTeXt linter is authoritative for this rule.
+            # A semantic observation about another concern is not a dollar fix.
+            uncertainties.append(f'Nicht als dollar_math-Verstoß bestätigt: {message}')
+            continue
+        if item['certainty'] == 'warning' or item['severity'] == 'warning':
+            uncertainties.append(message)
+            continue
+        if (type(line) is not int or not (1 <= line <= len(lines)) or
+            not isinstance(evidence, str) or not evidence.strip() or
+            evidence not in lines[line - 1]):
+            uncertainties.append(f'Nicht belegter Qualitätsbefund ({rule_id}): {message}')
+            continue
+        findings.append(QualityFinding(rule_id, message, file='main.tex', line=line,
+                                       certainty=item['certainty'], severity=item['severity']))
+    return findings, set(dismissed), list(dict.fromkeys(uncertainties))
 
 
 def _deduplicate(findings: list[QualityFinding]) -> list[QualityFinding]:
@@ -1276,8 +1341,11 @@ def _finish(report: RunReport, state: ArtifactState, report_path: Path) -> RunRe
     diff_path = report_path.parent / 'changes.diff'
     if report.mode == 'improve' and diff_path.is_file():
         report.artifacts['changes.diff'] = str(diff_path)
-    if report.content_uncertainties or report.review_uncertainties:
-        unique = list(dict.fromkeys(report.content_uncertainties + report.review_uncertainties))
+    if (report.content_uncertainties or report.review_uncertainties or
+            report.quality_uncertainties):
+        unique = list(dict.fromkeys(report.content_uncertainties +
+                                     report.review_uncertainties +
+                                     report.quality_uncertainties))
         lines = ['# Unklare Stellen', '',
                  'Diese Stellen sind nicht als originalgetreu bestätigt. '
                  'Bitte Originalquelle und ConTeXt-Kommentare (`[Scan unklar:`) prüfen.', '']

@@ -243,3 +243,24 @@ ConTeXt-Läufe bzw. fehlende Include-Ressourcen aus der aktiven Fundliste,
 Der historische Präflight-Befund bleibt nachvollziehbar und erhält
 `consistency.runtime_evidence`; offene Scanstellen bleiben ausdrücklich offen.
 Der gesamte Hosted-End-to-End-Prozess braucht weiterhin einen realen API-Test.
+
+### Qualitätsgruppen-Fortschritt und semantische Evidenz (0.9.5)
+
+Eine Qualitätsgruppe ohne reparierbare Befunde gilt sofort als erfüllt. Insbesondere
+führt ein erfolgreicher dynamischer `dollar_math`-Checker **nicht** mehr zu einem
+Refinement, nur weil das Modell eine unklare Einheit gemeldet hat. Der Präflight-
+Plan wird gruppenweise abgearbeitet; ein wirkungsloser Reparaturversuch wird nur
+für die aktuelle `(Quellrevision, Regelgruppe)` als bearbeitet markiert und hindert
+andere ausgewählte Gruppen nicht. Ein neuer Quellstand wird neu geprüft.
+
+Zusätzliche LLM-Findings müssen eine gültige Quellzeile und einen wörtlich in
+dieser Zeile vorkommenden `evidence`-Text angeben. Für `dollar_math` ist nach
+ausgeführtem dynamischen Linter dessen Befund maßgeblich. Unverifizierte oder
+falsch zugeordnete Modellmeldungen kommen nach `quality_uncertainties`,
+**nicht** in die Reparatur-Queue. Sie bleiben in `report.json` und gegebenenfalls
+`uncertainties.md` überprüfbar und können weiterhin `needs_review` bewirken.
+
+Der `quality_journal` enthält `quality_group_satisfied`,
+`quality_group_no_progress` und `quality_groups_exhausted`; für No-ops gibt es
+auch ein datensparsames `execution-events.jsonl`-Ereignis. Die alten Prüfungen
+und `mode: create` werden weiterhin unterstützt.

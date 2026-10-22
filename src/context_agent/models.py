@@ -265,6 +265,7 @@ class RunReport:
     review_history: list[dict[str, Any]] = field(default_factory=list)
     source_inventory: list[dict[str, Any]] = field(default_factory=list)
     review_uncertainties: list[str] = field(default_factory=list)
+    quality_uncertainties: list[str] = field(default_factory=list)
     include_changes: list[str] = field(default_factory=list)
     response_ids: list[str] = field(default_factory=list)
     observed_service_tiers: list[str] = field(default_factory=list)
@@ -332,6 +333,7 @@ class RunReport:
             "review_history": self.review_history,
             "source_inventory": self.source_inventory,
             "review_uncertainties": self.review_uncertainties,
+            "quality_uncertainties": self.quality_uncertainties,
             "include_changes": self.include_changes,
             "response_ids": self.response_ids,
             "observed_service_tiers": self.observed_service_tiers,
