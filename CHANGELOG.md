@@ -3,6 +3,34 @@
 Änderungen in umgekehrter Versionsreihenfolge. Die historischen Abschnitte
 sind inhaltlich unverändert übernommen; sie dokumentieren jeweils den damaligen Stand.
 
+## 0.9.8 – Kanonische Einheiten und partielle Improve-Kandidaten (22.10.2026)
+
+- Die numerische Normalisierung behandelt auch `\unit{kiloohm}` als
+  gleichwertig zu `\unit{kOhm}`. Die Regel `number_with_unit` bevorzugt
+  `\unit{kOhm}` und bietet für die bekannten Alias-Schreibweisen einen
+  deterministischen, hashgeschützten Autofix an.
+- Bei einem durch den Zahlen-/Einheitenschutz zurückgewiesenen Improve-Kandidaten
+  wird dessen komplette Fassung weiterhin unter `rejected/` gesichert.
+  Unabhängig verifizierbare Quellzeilen werden auf Basis des letzten geschützten
+  Stands isoliert; wertverändernde und unklare Zeilen werden verworfen.
+  Nur bei unveränderten Include-Inhalten und vorhandenem sicherem Hosted-Transport
+  wird der reduzierte Kandidat erneut kompiliert. Er wird erst **nach** erneutem
+  Requirements-/Qualitätsreview als geschützter Stand übernommen.
+  Fehlende API-Kapazität, fehlende Artefakte und Upload-/Compile-Fehler führen
+  weiterhin konservativ zum bisherigen Rollback.
+- Die unabhängigen Improve-Requirements-Reviews sind ausdrücklich auf die
+  jeweils übergebenen PDF-Seiten begrenzt. Fehlende andere Seiten eines Batches
+  sind kein Mangel; der Workflow prüft sie in den folgenden Batches und
+  protokolliert deren Ergebnisse getrennt. Relevante technische Font-Evidenz
+  wird auf das jeweilige Seitenpaket beschränkt.
+- Die 87 Original-Umstellungen aus dem Hosted-Lauf 0.9.7 sind als neue
+  Regressionstest-Fixierung aufgenommen. 70 von 71 betroffenen Quellzeilen
+  bestehen den isolierten Zahlen-Guard; die ungeklärte Angabe `1,\ 6`
+  bleibt gesperrt. Der komplette Fake-Improve-Workflow testet
+  Remote-Teilübernahme, Recompilation und erneuten unabhängigen Review.
+
+---
+
 ## 0.9.7 – Robuste unabhängige Requirements-Reviews (22.10.2026)
 
 - Requirements-Reviewer in der Responses API mit einem strikt typisierten JSON-Schema

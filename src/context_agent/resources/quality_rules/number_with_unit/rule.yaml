@@ -4,7 +4,7 @@ scope: Gesetzter Text, Mathematik, Formeln, Tabellen, Diagrammbeschriftungen.
 exceptions: Codebeispiele, Variablennamen und uneindeutige Abkürzungen.
 generation: Bevorzuge 10\unit{km/h}, \dn{5}\unit{Meter}, 30\unit{Degree}, \dn{12.5}\unit{Percent}; auch Celsius,
   Promille und kombinierte Einheiten.
-refinement: Einheit und Zahlenwert erhalten, \^\circ sowie manuelles Prozent, \mathrm für Einheiten ersetzen; benötigtes
+refinement: Kanonische Schreibweisen bevorzugen (\unit{kOhm} für Kiloohm, \unit{Ohm}, \unit{mV}, \unit{Percent}, \unit{Degree}); Einheit und Zahlenwert erhalten, \^\circ sowie manuelles Prozent, \mathrm für Einheiten ersetzen; benötigtes
   \dn-Makro als technische Ressource verfügbar machen.
 verification: Erneuter ConTeXt-Satzlauf, Fachwert und Darstellung mit Originalauftrag abgleichen.
 resources:

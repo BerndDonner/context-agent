@@ -89,7 +89,9 @@ def verified_evidence(
 
 
 def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
-           evidence: dict[str, object] | None = None) -> str:
+           evidence: dict[str, object] | None = None,
+           batch_start: int | None = None,
+           batch_end: int | None = None) -> str:
     task = job.task_path.read_text(encoding='utf-8')
     template = job.template_path.read_text(encoding='utf-8')
     sources = []
@@ -115,7 +117,29 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
         # Images, not thousands of repeated extracted font spans, provide the
         # visual evidence. Keep the checked page font names and host integrity.
         compact_evidence.pop('sample_rendered_text_font_runs_by_page', None)
+        if batch_start is not None and batch_end is not None:
+            if not 1 <= batch_start <= batch_end <= pages:
+                raise ValueError('invalid requirements page batch')
+            font_map = compact_evidence.get('embedded_pdf_font_names_by_page')
+            if isinstance(font_map, dict):
+                compact_evidence['embedded_pdf_font_names_by_page'] = {
+                    str(n): font_map[str(n)] for n in range(batch_start, batch_end + 1)
+                    if str(n) in font_map}
+            scope = (f'PRÜFUMFANG: Ausschließlich PDF-Ausgabeseiten '
+                     f'{batch_start} bis {batch_end} von insgesamt {pages}. '
+                     'Dies ist ein BATCH-TEILERGEBNIS, keine Aussage zur '
+                     'Vollständigkeit aller Dokumentseiten. Andere Seiten werden '
+                     'in eigenen unabhängigen Batches geprüft. Ihr Nichtvorliegen '
+                     'in diesem Aufruf ist KEINE Unsicherheit und kein Finding. '
+                     'status=passed bedeutet nur: Im zugewiesenen Seitenpaket '
+                     'ist keine neue Regression nachgewiesen und keine lokale '
+                     'Prüfung offen; nicht: das gesamte Dokument wurde gesehen. '
+                     'Wenn eine konkrete Stelle auf diesen Seiten nicht '
+                     'beurteilbar ist, melde status=uncertain und die genaue Stelle. ')
+        else:
+            scope = ''
         return (
+            scope + '\n'
             'UNABHÄNGIGE REQUIREMENTS VALIDATION – IMPROVE-REGRESSIONS-AUDIT. Prüfe ausschließlich '
             'durch folgende Quelländerungen neu eingeführte Inhalts-, Zahlen-, '
             'Einheiten-, Formel- und Layoutfehler. Die ausgewählten Quality-Checker '

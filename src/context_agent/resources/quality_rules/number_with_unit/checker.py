@@ -3,6 +3,8 @@ import re
 from context_agent.quality_rules import QualityContext, candidate, source_without_unset_text
 from context_agent.models import QualityFinding
 
+_CANONICAL_UNIT = re.compile(r'\\unit\{(?:kiloohm|Kiloohm|KiloOhm)\}')
+
 _PATTERNS = [
     re.compile(r'\d+(?:\{,\}\d+|\.\d+)?\s*(?:\\,)?\s*\\mathrm\s*\{(?:V|A|m|s|kg|Hz|W|Ohm|K|C)\}'),
     re.compile(r'\d+(?:\{,\}\d+|\.\d+)?\s*\^\s*\{?\\circ\}?'),
@@ -16,8 +18,13 @@ _PATTERNS = [
 def check(context: QualityContext) -> list[QualityFinding]:
     text=context.main_tex.read_text(encoding='utf-8')
     code=source_without_unset_text(text)
-    code=re.sub(r'\\unit\{[^{}]*\}', lambda m:' '*len(m.group()), code)
     results=[]; seen=set()
+    for m in _CANONICAL_UNIT.finditer(code):
+        results.append(candidate('number_with_unit', text, m.start(),
+            f'Einheitenalias {m.group()!r} auf \\unit{{kOhm}} vereinheitlichen',
+            hint=r'\unit{kOhm} ist die kanonische Kiloohm-Schreibweise.'))
+        seen.add(m.start())
+    code=re.sub(r'\\unit\{[^{}]*\}', lambda m:' '*len(m.group()), code)
     for pattern in _PATTERNS:
         for m in pattern.finditer(code):
             if m.start() in seen:

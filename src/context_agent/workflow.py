@@ -19,7 +19,8 @@ from context_agent.content_audit import (
 from context_agent.errors import ContextAgentError
 from context_agent.job import load_job, prepare_result_directory
 from context_agent.include_sync import IncludeTransaction, read_include_snapshot
-from context_agent.improvement import improvement_guard, improvement_diff
+from context_agent.improvement import (improvement_guard, improvement_diff,
+                                       isolate_safe_changes, guarded_source_replacement)
 from context_agent.rejected import preserve_rejected
 from context_agent.models import (
     AgentTurn,
@@ -454,12 +455,76 @@ def run_job(
                         approved_resolutions=[item.model_dump() for item in
                                               job.config.review.reference_resolutions])
                     if guard:
+                        # Keep the complete rejected generator candidate as evidence.
+                        # Independently usable lines may still be retained, but are
+                        # NOT promoted until the normal compile, requirements and
+                        # quality gates have checked the reduced candidate.
                         log_rollback('protected numeric content changed',
                                      reason_code='numeric_or_unit_inventory_changed',
                                      differences=guard)
-                        _restore_validated(job.result_dir,
-                                           last_validated if last_validated.joinpath('validation.json').is_file()
-                                           else baseline_snapshot)
+                        accepted_snapshot = (last_validated if last_validated.joinpath(
+                            'validation.json').is_file() else baseline_snapshot)
+                        partial = None
+                        if (was_quality_repair and session is not None and
+                                hasattr(session, 'apply_quality_edits') and
+                                accepted_snapshot.joinpath('main.tex').is_file() and
+                                accepted_snapshot.joinpath('include-snapshot.tar.gz').is_file() and
+                                state.include_snapshot is not None and _may_turn(report, job)):
+                            # Never silently incorporate changes to include resources.
+                            # Splitting is supported only for standalone main.tex edits.
+                            if (read_include_snapshot(state.include_snapshot) ==
+                                    read_include_snapshot(accepted_snapshot /
+                                                          'include-snapshot.tar.gz')):
+                                partial = isolate_safe_changes(
+                                    original_tex,
+                                    (accepted_snapshot / 'main.tex').read_text(encoding='utf-8'),
+                                    state.main_tex.read_text(encoding='utf-8'),
+                                    approved_resolutions=[item.model_dump() for item in
+                                        job.config.review.reference_resolutions])
+                        if (partial is not None and partial.included_regions > 0 and
+                                partial.excluded_regions > 0):
+                            candidate_text = state.main_tex.read_text(encoding='utf-8')
+                            record_event(job.result_dir / 'execution-events.jsonl',
+                                         'quality_partial_candidate_prepared',
+                                         phase='quality-refinement',
+                                         accepted_region_count=partial.included_regions,
+                                         rejected_region_count=partial.excluded_regions)
+                            try:
+                                turn = session.apply_quality_edits(
+                                    guarded_source_replacement(candidate_text, partial.source),
+                                    max_api_calls=job.config.limits.max_agent_turns-report.agent_turns)
+                                report.agent_turns += turn.api_calls
+                                report.response_ids.extend(turn.raw.get('response_ids',
+                                                                      [turn.response_id]))
+                                report.add_usage(turn.usage, phase='quality-partial-salvage',
+                                                 raw=turn.raw)
+                                append_transcript(transcript_path, turn_number=report.agent_turns,
+                                                  phase='quality-partial-salvage', turn=turn)
+                                state = _sync_state(session, job.result_dir)
+                                if (_missing_artifacts(state) or
+                                        state.main_tex.read_text(encoding='utf-8') != partial.source or
+                                        improvement_guard(original_tex, partial.source,
+                                            approved_resolutions=[item.model_dump() for item in
+                                                job.config.review.reference_resolutions])):
+                                    raise ContextAgentError('partial candidate failed source/compile validation')
+                            except Exception as exc:
+                                record_event(job.result_dir / 'execution-events.jsonl',
+                                             'quality_partial_candidate_failed',
+                                             phase='quality-refinement',
+                                             exception_type=type(exc).__name__)
+                                _restore_validated(job.result_dir, accepted_snapshot)
+                                state = _artifact_state(job.result_dir)
+                                report.status = 'needs_review'
+                                break
+                            report.quality_journal.append({
+                                'event': 'quality_partial_candidate_compiled',
+                                'included_regions': partial.included_regions,
+                                'excluded_regions': partial.excluded_regions,
+                                'validation': 'pending_independent_requirements_and_quality',
+                            })
+                            checkpoint('quality-partial-candidate-unvalidated')
+                            continue
+                        _restore_validated(job.result_dir, accepted_snapshot)
                         state = _artifact_state(job.result_dir)
                         report.status = 'needs_review'
                         break
@@ -492,8 +557,9 @@ def run_job(
                         for offset in range(0, len(pages), job.config.review.pages_per_batch):
                             batch = pages[offset:offset + job.config.review.pages_per_batch]
                             prompt = requirements_prompt(job, state.main_tex, pages=len(pages),
-                                                         evidence=evidence)
-                            prompt += f'\nOutput pages {offset+1} through {offset+len(batch)} of {len(pages)}.'
+                                                         evidence=evidence,
+                                                         batch_start=offset+1,
+                                                         batch_end=offset+len(batch))
                             result = _review_requirements_with_retry(
                                 session=session, prompt=prompt, pages=batch,
                                 report=report, job=job, transcript_path=transcript_path,
@@ -506,6 +572,14 @@ def run_job(
                                     f'{offset+1}-{offset+len(batch)}; no regression or approval '
                                     'can be inferred from the malformed response.')
                                 break
+                            report.review_history.append({
+                                'phase': 'requirements-batch',
+                                'batch': [offset + 1, offset + len(batch)],
+                                'status': result.status,
+                                'finding_count': len(result.findings),
+                                'regression_count': len(result.regressions),
+                                'uncertainty_count': len(result.uncertainties),
+                            })
                             if original_tex is not None:
                                 regressions, unverified = verify_regressions(
                                     result, original_tex, state.main_tex.read_text(encoding='utf-8'))

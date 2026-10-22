@@ -323,3 +323,21 @@ bleiben Bestandteil der Kontrolle. Diese Optimierung wurde offline geprüft;
 der tatsächliche API-Verbrauch muss beim nächsten Hosted-Lauf gemessen werden.
 
 Siehe [CHANGELOG.md](CHANGELOG.md) für die vollständige Versionshistorie.
+
+### Teilweise Übernahme bei `mode: improve`
+
+Schlägt der Zahlen-/Einheitenschutz nach einem Qualitäts-Refinement an,
+bleibt die gesamte beanstandete Kandidatenfassung in `result/rejected/` erhalten.
+Der Agent kann unabhängige, zahlenmäßig unveränderte Quellzeilen aus dem
+Kandidaten isolieren, sofern ein geschützter vorheriger Stand existiert und
+seine Include-Ressourcen unverändert sind. Die reduzierte Fassung wird über
+den bestehenden SHA-256-gesicherten Hosted-Edit-Transport neu kompiliert und
+durchläuft **erneut** die unabhängigen Requirements- und Qualitätsprüfungen.
+Bis zu deren Abschluss ist sie ausdrücklich nicht validiert. Unklare Zahlen
+bleiben ohne explizite Freigabe unverändert. Falls der sichere Weg nicht
+möglich ist, bleibt es beim vollständigen Rollback auf den geschützten Stand.
+
+Improve-Requirements-Reviews beurteilen jeweils ausschließlich die ihnen
+übergebenen PDF-Ausgabeseiten. Eine gültige Batch-Freigabe ist niemals eine
+Freigabe nicht betrachteter Seiten; erst die geprüfte Aggregation aller
+Batches bewertet das Gesamtdokument.

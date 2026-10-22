@@ -9,6 +9,7 @@ and independent requirements review.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher, unified_diff
 from collections.abc import Mapping, Sequence
@@ -32,7 +33,7 @@ _UNIT_ALIASES = {
     'microvolt': 'uV', 'mu V': 'uV',
     'A': 'A', 'Ampere': 'A', 'mA': 'mA', 'MilliAmpere': 'mA',
     'Ω': 'Ohm', 'Ohm': 'Ohm', 'kΩ': 'kOhm', 'kOhm': 'kOhm',
-    'KiloOhm': 'kOhm', 'Kiloohm': 'kOhm',
+    'KiloOhm': 'kOhm', 'Kiloohm': 'kOhm', 'kiloohm': 'kOhm',
     'Hz': 'Hz', 'Hertz': 'Hz', 'kHz': 'kHz', 'KiloHertz': 'kHz',
     's': 's', 'Second': 's', 'ms': 'ms', 'MilliSecond': 'ms',
     'min': 'min', 'Minute': 'min', 'day': 'day', 'days': 'day',
@@ -155,6 +156,68 @@ def improvement_guard(original: str, updated: str, *,
             problems.append(f'Changed region {index}: protected quantities differ: '
                             f'before={previous!r}; after={current!r}')
     return problems
+
+
+
+@dataclass(frozen=True)
+class PartialCandidate:
+    """Only the changes that independently pass the original-content guard.
+
+    The returned text is a *candidate*, not an accepted document: it must be
+    compiled and independently requirements/quality reviewed before promotion.
+    """
+
+    source: str
+    included_regions: int
+    excluded_regions: int
+
+
+def isolate_safe_changes(original: str, accepted: str, candidate: str, *,
+                         approved_resolutions: Sequence[Mapping[str, object]] | None = None,
+                         ) -> PartialCandidate:
+    """Select independent changed lines without silently authorizing ambiguities.
+
+    Align the candidate to the last protected revision. Equal-sized replace
+    runs are broken into single lines (a bad OCR value cannot contaminate the
+    neighboring unit replacements). Insertions/deletions are indivisible.
+    Every inclusion is re-checked against the *original* source, rather than
+    only the most recent accepted text. Never alter the input source itself.
+    """
+    before = accepted.splitlines(keepends=True)
+    after = candidate.splitlines(keepends=True)
+    choices: list[tuple[int, int, list[str]]] = []
+    for op, i, j, k, l in SequenceMatcher(None, before, after,
+                                         autojunk=False).get_opcodes():
+        if op == 'equal':
+            continue
+        if op == 'replace' and j - i == l - k:
+            choices.extend((i + n, i + n + 1, [after[k + n]])
+                           for n in range(j - i))
+        else:
+            choices.append((i, j, after[k:l]))
+
+    def assemble(chosen: list[tuple[int, int, list[str]]]) -> str:
+        lines = before.copy()
+        for start, end, replacement in reversed(chosen):
+            lines[start:end] = replacement
+        return ''.join(lines)
+
+    selected: list[tuple[int, int, list[str]]] = []
+    for choice in choices:
+        proposal = assemble(selected + [choice])
+        if not improvement_guard(original, proposal,
+                                 approved_resolutions=approved_resolutions):
+            selected.append(choice)
+    safe = assemble(selected)
+    assert not improvement_guard(original, safe,
+                                 approved_resolutions=approved_resolutions)
+    return PartialCandidate(safe, len(selected), len(choices) - len(selected))
+
+
+def guarded_source_replacement(current: str, replacement: str) -> list[dict[str, object]]:
+    """A single optimistic edit for the existing SHA-verified Hosted transport."""
+    return [{'rule_id': 'partial_salvage', 'path': 'main.tex', 'offset': 0, 'old': current, 'new': replacement,
+             'expected_sha256': hashlib.sha256(current.encode('utf-8')).hexdigest()}]
 
 
 def improvement_diff(original: str, updated: str, *, max_lines: int = 500) -> str:

@@ -1,0 +1,590 @@
+\mainlanguage[de]
+
+\setuplayout
+  [backspace=2.0cm,
+   height=middle,
+   width=middle,
+   leftmargin=1.8cm,
+   footerdistance=0.0cm,
+   rightmargindistance=0.2cm,
+   rightmargin=1.8cm,
+   bottom=0.5cm,
+   leftmargindistance=0.2cm,
+   header=2.1cm,
+   headerdistance=0.5cm,
+   footer=0.5cm,
+   top=0cm,
+   topspace=0.5cm,
+   bottomspace=0.0cm]
+
+\setupcolors[pagecolormodel=auto]
+
+\setuphead
+  [chapter]
+  [number=no,
+   style=,
+   textstyle=\tfb\ss,
+   before={\blank[small]},
+   after={\blank[small]}]
+
+\setuphead
+  [section]
+  [number=no,
+   style=,
+   textstyle=\tfa\ss,
+   before={\blank[small]},
+   after={\blank[small]}]
+
+\definemeasure[headerimageheight][\dimexpr(\headerheight-2ex)]
+
+\definelayer[sabel]
+
+\startsetups[sabel]
+\setlayerframed[sabel][x=0mm,y=0mm][frame=off,offset=none]
+{%
+   \setupTABLE[start][style=\tfx]
+   \setupTABLE[r][each][height=0.85\baselineskip]
+   \setupTABLE[column][1][align=right, width=.4\textwidth, loffset=-2pt, toffset=-5pt]%
+   \setupTABLE[column][2][align={center,lohi}, width=.2\textwidth]%
+   \setupTABLE[column][3][align=left, width=.4\textwidth, roffset=-2pt, toffset=-5pt]%
+   \bTABLE[frame=off]
+   \bTR \bTD Sabel-GBS           \eTD \bTD [nr=5] \dontleavehmode\externalfigure[../Logo/sabel.png][maxheight=\measure{headerimageheight}, frame=off]\dontleavehmode \eTD \bTD Schuljahr 2026/27                 \eTD \eTR
+   \bTR \bTD Messtechnik         \eTD                                                                                                                                     \bTD Klasse M1A                        \eTD \eTR
+   \bTR \bTD B.~Donner           \eTD                                                                                                                                     \bTD                                   \eTD \eTR
+   \bTR \bTD \strut              \eTD                                                                                                                                     \bTD Name: \thinrules[n=1,width=2.7cm] \eTD \eTR
+   \bTR \bTD Übungsblatt     \eTD                                                                                                                                     \bTD Einführung Messtechnik      \eTD \eTR
+   \eTABLE}
+\stopsetups
+
+\setupbackgrounds[header][text][bottomframe=on,setups=sabel,background=sabel]
+\setuppagenumbering[location={footer,middle},style=\bfc]
+
+\setupfootertexts
+  [Arbeitszeit: ca. 90 min][Messtechnik]
+  [Messtechnik][Arbeitszeit: ca. 90 min]
+
+\setdigitmode 3
+\unexpanded\def\dn#1{\ifmmode\text{\digits{#1}}\else\digits{#1}\fi}
+
+\setupmathematics[ampersand=text]
+\setupformulas[align=middle]
+
+\setupitemgroup[itemize][1][n,repeat][width=1.6em,distance=.4em]
+\setupitemgroup[itemize][2][a,repeat][width=1.8em,distance=.4em]
+
+\definemargindata
+  [myinleft]
+  [inleft]
+  [align=flushleft]
+
+\defineenumeration[exercise]
+  [text=,
+   alternative=myinleft,
+   width=2em,
+   distance=0.5em,
+   style=\rm,
+   headstyle=\rm,
+   way=bytext,
+   prefix=no,
+   headcommand=\groupedcommand{}{}]
+
+\defineframedtext
+  [hinweis]
+  [width=broad,
+   frame=on,
+   rulethickness=.6pt,
+   corner=round,
+   offset=.7em,
+   background=color,
+   backgroundcolor=lightgray,
+   before={\blank[small]},
+   after={\blank[medium]}]
+
+\starttext
+% Quelle: input/Übungen Einführung Messtechnik.pdf, Seiten 1–11.
+% Reproduktion, keine Neuberechnung. Ungeklärte Scanstellen sichtbar markiert.
+\define[1]\Loesung{{\it #1}\par\blank[small]}
+\define[1]\ScanUnklar{{\tfxx [Scan unklar: #1]}}
+\startMPinclusions
+input "../include/mymacros.mp";
+\stopMPinclusions
+\startluacode
+package.path = "../include/?.lua;" .. package.path
+userdata = userdata or {}
+userdata.plotmod = require("plotmod")
+-- Aufgabe 11: relative geometrische Einheiten, keine numerischen Achsenwerte.
+local T, A = 6, 2
+local p = userdata.plotmod.create_plot()
+p:set_window{ xmin=-0.5, xmax=1.7*T, ymin=-0.5, ymax=2*A+0.8,
+              xunit="0.9cm", yunit="0.65cm" }
+p:define_ticks{ x={{value=T,kind="major"}}, y={} }
+p:define_labels{ x={}, y={} }
+p:add_axes{ xlabel=[[\m{t}]], ylabel=[[\m{u}]],
+            xlabel_placement="bottom_right", ylabel_placement="top",
+            xaxis={label_distance="1mm",positive_end={arrow_gap="0mm"}},
+            yaxis={label_distance="1mm",positive_end={arrow_gap="0mm"}} }
+p:add_tex_label([[\m{T}]],T,0,{placement="bottom_right",distance="1mm"})
+p:add_tex_label([[\m{\hat u}]],0,2*A,{placement="left",distance="1mm"})
+p:add_function{ expression=string.format("%g*(1+sin(2*pi*x/%g))",A,T),
+                samples=500,clip={xmin=0,xmax=1.5*T,ymin=0,ymax=2*A} }
+-- Hilfslinie von Spannungsachse bis zum ersten Scheitelpunkt.
+-- MP-Gerätekoordinaten einmal aus denselben unabhängigen Größen ableiten.
+local xu = tex.sp("0.9cm")/65781.76
+local yu = tex.sp("0.65cm")/65781.76
+local ox,oy = .5*xu,.5*yu
+p:add_raw_mp(string.format("draw (%g,%g)--(%g,%g) withpen pencircle scaled 0.4bp;",ox,oy+2*A*yu,ox+T/4*xu,oy+2*A*yu))
+userdata.mischspannung = p:render()
+\stopluacode
+
+\chapter{Übungen – Einführung Messtechnik}
+Übungsaufgaben
+\section{I Analoge Messgeräte}
+\startexercise
+Es sollen Messungen mit einem analogen Spannungsmesser mit der
+Genauigkeitsklasse \m{\mathrm{GK} = \dn{1.5}} im 20\unit{V} - Messbereich durchgeführt werden.
+Für welche Spannungswerte ist eine relative Abweichung des Messergebnisses
+vom tatsächlichem Wert von maximal \m{f = \pm 2\unit{Percent}} garantiert?
+\blank[small]
+\Loesung{Lösung: \m{U_{\mathrm{Mess}} >\! = 15\unit{V}}}
+\stopexercise
+\startexercise
+Ein analoger Spannungsmesser mit der Genauigkeitsklasse \m{\mathrm{GK} = \dn{1.5}} liefert
+beim Anlegen einer Spannung einen Messwert, der genau 40\unit{Percent} des
+Vollausschlages beträgt.
+\blank[small]
+Bestimmen Sie den durch die Genauigkeitsklasse bedingten maximal möglichen
+relativen Messfehler
+\blank[small]
+\Loesung{Lösung: \m{f = \pm \dn{3.75}\unit{Percent}}}
+\stopexercise
+\section{II Digitale Messgeräte}
+\startexercise
+Für ein 3 ½ stelliges DMM gibt der Hersteller die zusätzliche Angabe
+\m{F = \pm (\dn{0.5}\unit{Percent}\ \text{v.MW} + 3\ \text{Digits})}.
+\par
+Wie groß darf ein Messwert im 20\unit{V} -Messbereich höchstens sein, damit ein
+absoluter Fehler von \m{F = \pm 90\unit{mV}} nicht überschritten wird?
+\blank[small]
+\Loesung{Lösung: \m{\mathrm{MW} = 12\unit{V}}}
+\stopexercise
+\startexercise
+Für ein 3 ½ stelliges DMM gibt der Hersteller die zusätzliche Angabe
+\m{F = \pm (\dn{0.5}\unit{Percent}\ \text{v.MW} + 4\ \text{Digits})}.
+\par
+Wie groß darf ein Messwert im 200\unit{V} -Messbereich höchstens sein, damit ein
+absoluter Fehler von \m{F = \pm \dn{1.15}\unit{V}} nicht überschritten wird?
+\blank[small]
+\Loesung{Lösung: \m{\mathrm{MW} = 150\unit{V}}}
+\stopexercise
+\startexercise
+Ein digitaler Spannungsmesser hat eine Auflösung von 100\unit{microvolt}. Der Hersteller
+gibt einen absoluten Fehler mit \m{\pm (\dn{0.25}\unit{Percent}\ \text{vom Messwert} + 1\ \text{Digits})} an. Der
+Spannungsmesser zeigt einen Messwert von 300\unit{mV} an.
+\blank[small]
+Berechnen Sie, in welchem Bereich der angezeigte Messwert tatsächlich liegen
+kann .
+\blank[small]
+\Loesung{Lösung: \m{\mathrm{MW} = 300\unit{mV} \pm \dn{0.85}\unit{mV}}}
+\stopexercise
+\page
+\startexercise
+Mit einem DMM wird im 2\unit{kiloohm}–Messbereich mit einer Auflösung von 1\unit{Ohm} und einer
+Fehlergrenze von \m{\pm (\dn{1.6}\unit{Percent}\ \text{vom Messwert} + 2\ \text{Digits})} ein Wert von
+\dn{0.152}\unit{kiloohm} angezeigt. Wird auf den 200\unit{Ohm} Messbereich mit einer Auflösung von
+\dn{0.1}\unit{Ohm} umgeschaltet, der einen absoluten Fehler von
+\m{\pm (\dn{1.6}\unit{Percent}\ \text{vom Messwert} + 2\ \text{Digits})} hat, so zeigt das Instrument einen Wert von
+\dn{149.8}\unit{Ohm} an.
+\blank[small]
+Berechnen Sie für den jeweiligen Messbereich den relativen Fehler.
+\blank[small]
+\Loesung{Lösungen: \m{\mathrm{MB} = 2\unit{kiloohm} :\ f = \pm \dn{2.9}\unit{Percent}}\par
+\hskip 5.4em \m{\mathrm{MB} = 200\unit{Ohm} :\ f = \pm \dn{1.73}\unit{Percent}}}
+\stopexercise
+\section{III Vergleich analoges und digitales Messgerät}
+\startexercise
+Ein analoges Voltmeter soll hinsichtlich der Genauigkeit mit einem DMM
+verglichen werden. Der Vergleich soll für beide Geräte im 200\unit{V} Messbereich
+durchgeführt werden.
+\par
+Das analoge Gerät besitzt eine Genauigkeitsklasse \m{\mathrm{GK} = \dn{0.5}}.
+\par
+Für das DMM gelten die Daten: \m{f_{\mathrm G} = \dn{0.5}\unit{Percent}\ ;\ f_{\mathrm Q} = 3\ ;\ Z = \dn{0.1}\unit{V}}
+\blank[small]
+\startitemize[a]
+\sym{a)} Bei welchem Messwert arbeiten beide Instrumente gleich genau ?
+\blank[small]
+\Loesung{Lösung: \m{\mathrm{MW} = 140\unit{V}}}
+\sym{b)} Welcher relativer Fehler ergibt sich bei diesem Messwert für beide Geräte ?
+\blank[small]
+\Loesung{Lösung: \m{f = \pm \dn{0.71}\unit{Percent}}}
+\sym{c)} Welches von den beiden Geräten misst genauer wenn der unter a)
+gefundene Wert überschritten wird ?
+\blank[small]
+\Loesung{Lösung: Das analoge Voltmeter}
+\stopitemize
+\stopexercise
+\page
+\section{IV Gleichricht- und Effektivwert}
+\startexercise
+Eine mit der Frequenz \m{f = 150\unit{Hz}} wiederkehrende Triggerpulsfolge, die mit
+einem Drehspulmessgerät erfasst wird, ergibt einen Messwert von \m{U = 1\unit{V}}
+\blank[small]
+Wie groß ist die Impulsbreite, wenn die Impulsspannungshöhe \m{\hat u = 5\unit{V}} beträgt?
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+numeric h, d, period;
+h:=2.4cm; d:=1.1cm; period:=5.3cm;
+pair O, D, P, E, H, Xend, Yend;
+O:=(0,0); D:=O+(d,0); P:=O+(period,0); E:=P+(d,0);
+H:=O+(0,h); Xend:=E+(1.7cm,0); Yend:=H+(0,.7cm);
+pickup pencircle scaled .55bp;
+drawarrow (O-(.5cm,0))--Xend;
+drawarrow (O-(0,.5cm))--Yend;
+draw H--(D+(0,h))--D--P--(P+(0,h))--(E+(0,h))--E
+ withpen pencircle scaled .8bp;
+label.top(textext("\m{\frac{U}{\unit{V}}}"),Yend);
+label.lft(textext("\m{5}"),H);
+label.bot(textext("\m{t_{\mathrm D}}"),D);
+label.bot(textext("\m{T}"),P);
+label.lrt(textext("\m{t}"),Xend);
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+\Loesung{Lösung : \m{t_{\mathrm D} = \dn{1.33}\unit{ms}}}
+\stopexercise
+\startexercise
+Der folgende periodische Spannungsverlauf ist gegeben. Die Periodendauer sei
+\m{T = 40\unit{ms}}.
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+% Sprungpositionen nur geometrisch übernommen, ohne neue Zeitbeschriftung.
+numeric period, high, low;
+period:=6.3cm; high:=2.1cm; low:=-1.05cm;
+pair O, Mid, Last, Jump, Peak, Xend, Yend, Highmark, Lowmark;
+O:=(0,0); Mid:=O+(period/2,0); Last:=O+(period,0);
+Jump:=.5[O,Mid]; Peak:=.5[Mid,Last]+(0,high);
+Xend:=Last+(.9cm,0); Highmark:=O+(0,high); Lowmark:=O+(0,low);
+Yend:=Highmark+(0,.6cm);
+pickup pencircle scaled .55bp;
+drawarrow (O-(1cm,0))--Xend;
+drawarrow (Lowmark-(0,.4cm))--Yend;
+draw ytick(1.5mm,Highmark);
+draw xtick(1.5mm,Mid); draw xtick(1.5mm,Last);
+draw (O-(2mm,2mm))--(O+(2mm,2mm));
+draw (Last-(2mm,2mm))--(Last+(2mm,2mm));
+draw Lowmark--(Jump+(0,low))--Jump--Peak--(xpart Peak,low)--(Last+(0,low))
+ withpen pencircle scaled 1bp;
+label.top(textext("\m{\frac{U}{\unit{V}}}"),Yend);
+label.rt(textext("\m{20}"),Highmark+(2mm,0));
+label.llft(textext("\m{-10}"),Lowmark);
+label.bot(textext("\m{20}"),Mid-(0,2mm));
+label.bot(textext("\m{40}"),Last-(0,2mm));
+label.rt(textext("\m{\frac{t}{\unit{ms}}}"),Xend+(3mm,0));
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+Welchen Spannungswert zeigt ein Drehspulmessgerät mit vorgeschalteter
+Gleichrichterschaltung an?
+\blank[small]
+\Loesung{Lösung: \m{U = 10\unit{V}}}
+\stopexercise
+\page
+\startexercise
+Eine Sägezahnspannung mit nachfolgender Austastzeit besitzt eine
+Wiederholfrequenz von \m{f = 200\unit{Hz}} . Mit einem Drehspulmessgerät wird eine
+Spannung von \m{U = \dn{0.5}\unit{V}} gemessen
+\blank[small]
+Wie groß ist die zeitliche Dauer \m{t_{\mathrm D}} des Sägezahns, wenn die maximale
+Spannungshöhe \m{\hat u = 5\unit{V}} beträgt?
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+numeric h, d, period;
+h:=2.3cm; d:=1.7cm; period:=5.3cm;
+pair O, D, P, E, H, Xend, Yend, Ga, Gb;
+O:=(0,0); D:=O+(d,0); P:=O+(period,0); E:=P+(d,0);
+H:=O+(0,h); Xend:=E+(1.2cm,0); Yend:=H+(0,.6cm);
+Ga:=.35[D,P]; Gb:=.75[D,P];
+pickup pencircle scaled .55bp;
+draw (O-(.3cm,0))--Ga;
+draw Ga--Gb dashed withdots;
+drawarrow Gb--Xend;
+drawarrow (O-(0,.5cm))--Yend;
+draw O--(D+(0,h))--D;
+draw P--(E+(0,h))--E;
+draw ytick(1.5mm,H); draw xtick(1mm,P);
+label.top(textext("\m{\frac{U}{\unit{V}}}"),Yend);
+label.lft(textext("\m{5}"),H);
+label.bot(textext("\m{t_{\mathrm D}}"),D);
+label.bot(textext("\m{T}"),P);
+label.lrt(textext("\m{t}"),Xend);
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+\Loesung{Lösung : \m{t_{\mathrm D} = 1\unit{ms}}}
+\stopexercise
+\startexercise
+Eine sinusförmige Wechselspannung hat durch Überlagerung mit einer
+Gleichspannung folgenden Verlauf:
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+\ctxlua{context(userdata.mischspannung)}
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+Mit einem Drehspulmessgerät wurde diese Mischspannung gemessen und es ergab
+sich ein Wert von u = \dn{7.5}\unit{V} .
+\blank[small]
+\startitemize[a]
+\sym{a)} Welchen Spannungswert U hat die überlagerte Gleichspannung ?
+\blank[small]
+\Loesung{Lösung :U= \dn{7.5}\unit{V}}
+\sym{b)} Bestimmen Sie bitte die Amplitude \m{\hat u} des dargestellten Spannungsverlaufs.
+\blank[small]
+\Loesung{Lösung : \m{\hat u = 15\unit{V}}}
+\sym{c)} Mit einer weiteren Messung wird die reine Wechselspannung (ohne
+Gleichspannungsanteil) wieder mit einem Drehspulmessgerät (mit
+vorgeschaltetem Gleichrichter für beide Halbwellen) untersucht.
+\par
+Welcher Spannungswert wird jetzt angezeigt?
+\blank[small]
+\Loesung{Lösung: \m{U_{\mathrm{Gl}} = \dn{4.78}\unit{V}}}
+\stopitemize
+\stopexercise
+\page
+\startexercise
+Bei einer Rechtecksignalspannung mit der Periodendauer \m{T = 80\unit{ms}} soll die
+Impulshöhe \m{\hat u} sowie die Impulsbreite \m{t_{\mathrm D}} bestimmt werden.
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+numeric h, d, period;
+h:=2.4cm; d:=1.6cm; period:=4.8cm;
+pair O, D, P, E, H, Xend, Yend, Ga, Gb;
+O:=(0,0); D:=O+(d,0); P:=O+(period,0); E:=P+(d,0);
+H:=O+(0,h); Xend:=E+(1.6cm,0); Yend:=H+(0,.8cm);
+Ga:=.25[D,P]; Gb:=.75[D,P];
+pickup pencircle scaled .55bp;
+draw (O-(.8cm,0))--Ga;
+draw Ga--Gb dashed withdots;
+drawarrow Gb--Xend;
+drawarrow (O-(0,.8cm))--Yend;
+draw H--(D+(0,h))--D;
+draw P--(P+(0,h))--(E+(0,h))--E;
+label.rt(textext("\m{U}"),Yend);
+label.lft(textext("\m{\hat u}"),H);
+label.bot(textext("\m{t_{\mathrm D}}"),D);
+label.bot(textext("\m{T}"),P);
+label.lrt(textext("\m{t}"),Xend);
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+Zu diesem Zweck wird durch eine Messung der arithmetische Mittelwert und
+durch eine weitere Messung der Effektivwert der Signalspannung bestimmt.
+\blank[small]
+\startitemize[a]
+\sym{a)} Mit welchem analogen Messgerät wurde der arithmetische Mittelwert, und
+mit welchem Instrument wurde der Effektivwert gemessen?
+\blank[small]
+\Loesung{Lösungen: Arithm.: Drehspul\par\hskip 5.4em Effekt.: Dreheisen}
+\sym{b)} Bestimmen Sie die Impulshöhe \m{\hat u} und die Impulsbreite \m{t_{\mathrm D}}, wenn für den
+arithmetischen Mittelwert u = \dn{1.25}\unit{V} und für den Effektivwert \m{U_{\mathrm{eff}} = \dn{2.5}\unit{V}}
+gemessen wurden.
+\blank[small]
+\Loesung{Lösungen: \m{\hat u = 5\unit{V}\ ;\ t_{\mathrm D} = 20\unit{ms}}}
+\stopitemize
+\stopexercise
+\section{V Widerstandsbestimmungen}
+\startexercise
+Ein unbekannter Widerstand \m{R_{\mathrm X}} soll durch eine Strom- und
+Spannungsmessung ermittelt werden.
+\par
+Verwendet werden ein Spannungsmesser mit dem Innenwiderstand \m{R_{\mathrm{iU}} = 50\unit{kiloohm}}
+\par
+und ein Strommesser mit dem Innenwiderstand \m{R_{\mathrm{iI}} = \dn{0.5}\unit{Ohm}} wirksam durch die
+jeweilig eingestellten Messbereiche.
+\blank[small]
+\startitemize[a]
+\sym{a)} Zeichnen Sie die „Spannungsrichtige Schaltung“ mit Angabe der
+Innenwiderstände der verwendeten Messgeräte.
+\sym{b)} Durch die obige Schaltung wird eine Spannung von \m{U = \dn{9.97}\unit{V}} und ein
+Strom \m{I = 20\unit{mA}} gemessen.
+\par
+Mit welchem Widerstandswert \m{\Delta R} muss der gemessene Wert korrigiert
+werden, der sich durch den systematischen Fehler ergeben hatte?
+\par
+(Bitte möglichst genau rechnen.)
+\blank[small]
+\Loesung{Lösung: \m{\Delta R =}\ScanUnklar{Vorzeichen}\m{\dn{5.02}\unit{Ohm}}}
+\stopitemize
+\stopexercise
+\page
+\startexercise
+Ein unbekannter Widerstand \m{R_{\mathrm X}} soll durch eine Strom- und Spannungsmessung
+ermittelt werden.
+\par
+Verwendet werden ein Spannungsmesser mit dem Innenwiderstand \m{R_{\mathrm{iV}} = 80\unit{kiloohm}}
+\par
+und ein Strommesser mit dem Innenwiderstand \m{R_{\mathrm{iI}} = \dn{0.5}\unit{Ohm}}
+\blank[small]
+\startitemize[a]
+\sym{a)} Zeichnen Sie die „Spannungsrichtige Schaltung“ mit den jeweiligen
+Ersatzschaltbildern der verwendeten Messgeräte.
+\sym{b)} Es wird eine Spannung von \m{U = 10\unit{V}} und ein Strom \m{I = \dn{1.55}\unit{mA}} gemessen.
+\par
+Wie groß ist der gemessene und der wahre Widerstandswert von \m{R_{\mathrm X}} ?
+\par
+(Bitte möglichst genau rechnen.)
+\blank[small]
+% Schwarzer Druck ohne k; rote handschriftliche k-Ergänzungen separat darüber.
+\Loesung{Lösung:\m{R_{\mathrm{XM}} = \dn{6.452}\,\overset{\color[red]{k}}{\Omega},\ R_{\mathrm X} = \dn{7.018}\,\overset{\color[red]{k}}{\Omega}}}
+\stopitemize
+\stopexercise
+\section{VI Messbereichserweiterung}
+\startexercise
+Bestimmen Sie die Widerstände \m{R_{\mathrm N}} und \m{R_{\mathrm V}} für eine Strom- und
+Spannungsmessbereichserweiterung.
+\blank[small]
+Technische Daten des Messwerkes: \m{U_{\mathrm{max}} = 500\unit{mV}\ ;\ R_{\mathrm{iM}} = 500\unit{Ohm}}
+\par
+Gewünschte feste Messbereiche : \m{U = 10\unit{V}\ ;\ I = 20\unit{mA}}
+\blank[small]
+\Loesung{Lösungen: \m{R_{\mathrm N} = \dn{26.3}\unit{Ohm}\ ;\ R_{\text{[Index unklar]}} = 475\unit{Ohm}}}
+\ScanUnklar{Index des zweiten R durch blaue Markierung überlagert.}
+\stopexercise
+\section{VII Relative Fehler}
+\startexercise
+Durch eine Strom- und Spannungsmessung soll sowohl eine
+Widerstandsbestimmung als auch eine Leistungsbestimmung vorgenommen
+werden.
+\par
+Das Strommessgerät arbeitet mit einer relativen Abweichung
+\par
+\m{f_{\mathrm I} = \Delta I / I = +\dn{0.004}}
+\par
+und das Spannungsmessgerät mit einer relativen Abweichung
+\par
+\m{f_{\mathrm U} = \Delta U / U = +\dn{0.006}}
+\blank[small]
+\startitemize[a]
+\sym{a)} Welche relative Abweichung ergibt sich bei der Widerstandsbestimmung?
+\blank[small]
+\Loesung{Lösung: \m{f_{\mathrm R} = \dn{0.002}}}
+\sym{b)} Bestimmen Sie nun die relative Abweichung bei der Leistungsbestimmung
+durch die Strom-Spannungs-Beziehung (\m{P = U * I}),
+\par
+\hskip 2em die Strom-Widerstands-Beziehung (\m{P = R * I^2})
+\par
+und die Spannungs-Widerstands-Beziehung (\m{P = U^2 / R}).
+\blank[small]
+\Loesung{Lösung: \m{f_{\mathrm P} = \dn{0.01}}}
+\stopitemize
+\stopexercise
+\page
+\startexercise
+Durch eine Strom- und Spannungsmessung soll sowohl eine
+Widerstandsbestimmung als auch eine Leistungsbestimmung vorgenommen
+werden.
+\par
+Das Strommessgerät arbeitet mit einer relativen Abweichung
+\par
+\m{f_{\mathrm I} = \Delta I / I = \dn{-0.004}}
+\par
+und das Spannungsmessgerät mit einer relativen Abweichung
+\par
+\m{f_{\mathrm U} = \Delta U / U = +\dn{0.005}}
+\blank[small]
+% Die Folge c), b) ist im Original so gedruckt.
+\startitemize[a]
+\sym{c)} Welche relative Abweichung ergibt sich bei der Widerstandsbestimmung?
+\blank[small]
+\Loesung{Lösung: \m{f_{\mathrm R} = \dn{0.9}\unit{Percent}}}
+\sym{b)} Bestimmen Sie nun die relative Abweichung bei der Leistungsbestimmung
+durch die Strom-Spannungs-Beziehung (\m{P = U * I}),
+\par
+\hskip 2em die Strom-Widerstands-Beziehung (\m{P = R * I^2})
+\par
+und die Spannungs-Widerstands-Beziehung (\m{P = U^2 / R}).
+\blank[small]
+\Loesung{Lösung: Immer \m{f_{\mathrm P} = \dn{0.1}\unit{Percent}}}
+\stopitemize
+\stopexercise
+\startexercise
+In dem abgebildeten Schaltungsauszug soll der Strom I bestimmt werden.
+\blank[small]
+\startlinecorrection
+\midaligned{\startMPcode
+pair Ctop, Cbot, Ntop, Nbot, N, Out, Aone, Atwo, Aout, Boxll, Boxur;
+numeric r, sep;
+r:=4mm; sep:=13mm;
+Ctop:=(0,sep/2); Cbot:=Ctop-(0,sep);
+N:=(22mm,0); Ntop:=(xpart N,ypart Ctop); Nbot:=(xpart N,ypart Cbot);
+Out:=N+(21mm,0);
+Aone:=.6[Ctop+(r,0),Ntop]; Atwo:=Aone-(0,sep); Aout:=.65[N,Out];
+Boxll:=Nbot+(-1.5mm,-9mm); Boxur:=(xpart Out+5mm,ypart Ntop+9mm);
+pickup pencircle scaled .55bp;
+for C=Ctop,Cbot:
+ draw fullcircle scaled (2r) shifted C;
+ draw (C-(r+5mm,0))--(C-(r,0));
+ draw (C-(r+11mm,0))--(C-(r+5mm,0)) dashed withdots;
+endfor;
+draw (Ctop+(r,0))--Ntop--Nbot--(Cbot+(r,0));
+draw N--Out;
+draw Out--(Out+(10mm,0)) dashed withdots;
+drawarrow (Aone-(3mm,0))--Aone;
+drawarrow (Atwo-(3mm,0))--Atwo;
+drawarrow (Aout-(3mm,0))--Aout;
+draw Boxll--(xpart Boxur,ypart Boxll)--Boxur--(xpart Boxll,ypart Boxur)--cycle dashed withdots;
+label.top(textext("I1"),Aone+(0,2mm));
+label.top(textext("I2"),Atwo+(0,2mm));
+label.top(textext("I"),Aout+(0,2mm));
+\stopMPcode}
+\stoplinecorrection
+\blank[small]
+Der gestrichelt umrandete Teil ist jedoch nicht zugänglich. Aus diesem Grund
+werden die Ströme I1 und I2 gemessen und anschließend der Strom I durch
+Rechnung bestimmt.
+\blank[small]
+Es wurde gemessen: \m{\mathrm{I1} = 30\unit{mA} \pm 2\unit{Percent}\ ;\ \mathrm{I2} = \dn{-28.4}\unit{mA} \pm \dn{1.5}\unit{Percent}}
+\blank[small]
+\startitemize[a]
+\sym{c)} Bestimmen Sie den Strom I .
+\blank[small]
+\Loesung{Lösung: \m{I = \dn{1.6}\unit{mA}}}
+\sym{d)} Mit welchem relativen Fehler ist diese I -Bestimmung behaftet ?
+\blank[small]
+\Loesung{Lösung: \m{f = \pm \dn{64.1}\unit{Percent}}}
+\stopitemize
+\stopexercise
+\page
+\startexercise
+Bei einer Quarzuhr soll ausschließlich die Periodendauer des Schwingquarzes
+für die Ganggenauigkeit der Uhr ausschlaggebend sein. Bei der betrachteten
+Uhr weicht die Quarzfrequenz vom Sollwert um \m{f = -\dn{0.001}\unit{Percent}} ab.
+\blank[small]
+Welche Zeitabweichung ergibt sich während einer Laufzeit von 14 Tagen
+verglichen mit einer perfekt laufenden Uhr ?
+\blank[small]
+\Loesung{Lösung: \m{F = \dn{-12.096}\unit{s}} Die Uhr geht nach.}
+\stopexercise
+\section{VIII Normalverteilung}
+\startexercise
+Beim Herstellungsprozess von \dn{5.6}\unit{kiloohm}- Widerständen sind alle produzierten
+Widerstände um den Sollwert R = \dn{5.6}\unit{kiloohm} mit einer Standartabweichung s = 110\unit{Ohm}
+normalverteilt.
+\blank[small]
+\startitemize[a]
+\sym{a)} Wieviel Prozent Ausschuss entstehen durch Aussortierung, wenn der
+Hersteller eine Genauigkeit von \m{\Delta R/R = \pm 2\unit{Percent}} garantieren will.
+\blank[small]
+\Loesung{Lösung:}
+\sym{b)} Skizzieren Sie die Verteilungsfunktion mit den Parametern x und s und
+kennzeichnen Sie dort die Bereiche, die den Ausschuss darstellen.
+\stopitemize
+\ScanUnklar{Zusätzliche kleine Zeichen an x und s nicht sicher entzifferbar.}
+\stopexercise
+
+\stoptext
