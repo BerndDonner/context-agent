@@ -143,9 +143,13 @@ es darf keine Quelltextänderung stattfinden. Ein SHA-256-validierter
 `result/.baseline/`-Snapshot sichert auch dann den kompilierbaren Ursprungsstand,
 wenn bereits Inhaltshinweise oder Scanunsicherheiten existieren. Weitere Änderungen
 werden gegenüber der Originaldatei mit `result/changes.diff` protokolliert.
-Die Requirements Validation prüft weiter Originalauftrag, Referenzen, Quellcode,
-Ausgabeseiten und Diff. Neu eingeführte Requirements-Verstöße oder veränderte
-numerische Literal-Mengen führen zum Rollback auf den letzten überprüften Stand.
+Die erste unveränderte Baseline wird nicht wiederholt als unerfüllter
+Verbesserungsauftrag begutachtet. Nach Änderungen prüft die unabhängige
+Requirements Validation weiterhin Originalauftrag, Quellcode, Ausgabeseiten,
+Diff und die **tatsächlich angehängten** Original-PDFs. Nur durch Quelländerungen
+belegte neue Requirements-Regressionen sowie geänderte numerische Literal-Mengen
+führen zum Rollback; schwach belegte Verdachtsfälle werden als Unsicherheit
+protokolliert.
 Vorhandene Unsicherheiten bleiben erhalten und können `needs_review` auslösen,
 blockieren aber nicht mehr zwingend jede reine Qualitätsverbesserung.
 
@@ -169,3 +173,16 @@ Der Runner entpackt die mitgelieferte Linux-x86-64-LMTX-Distribution
 in ein temporäres Verzeichnis, erstellt einen Schreibcache, kompiliert in
 Quelltext-Nähe und räumt anschließend seine Installation auf.
 Die API-gestützte `run`-Pipeline wird dadurch nicht ersetzt.
+
+### Zuverlässigkeit der Hosted Shell (0.9.1)
+
+Unvollständige Responses oder vorzeitig fehlende Shell-Tool-Ausgaben werden
+begrenzt erneut abgefragt. Eine neue Ausführungsanfrage verwendet stets dieselbe
+Prozess-ID; der containerseitige Supervisor erkennt identische Starts als
+idempotent, lehnt aber abweichende Befehle mit derselben ID ab. Das verhindert
+doppelte Seiteneffekte bei verlorenen API-Bestätigungen.
+
+Die Original-PDF-Referenz wird unabhängigen Improve-Reviewern als `input_file`
+mitgeschickt. Das erhöht den Preis der unabhängigen Reviews, liefert ihnen aber
+die Scaninformation tatsächlich. Noch kein erneuter Hosted-End-to-End-Test
+mit Produktions-API-Key durchgeführt.

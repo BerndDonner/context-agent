@@ -34,7 +34,7 @@ from context_agent.quality_rules import (QualityContext, findings_as_prompt, loa
 from context_agent.quality_preflight import Preflight, llm_preflight
 from context_agent.requirements import (prompt as requirements_prompt,
                                         parse_result as parse_requirements,
-                                        verified_evidence)
+                                        verified_evidence, verify_regressions)
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
 from context_agent.progress import Progress
 from context_agent.scan_markers import visible_scan_markers, inherited_scan_uncertainties
@@ -138,7 +138,9 @@ def run_job(
     baseline_requirement_findings: set[str] | None = (
         set(stored['baseline_requirements']) if stored and
         stored.get('baseline_requirements') is not None else None)
-    baseline_uncertainties: set[str] = set(stored.get('baseline_uncertainties', [])) if stored else set()
+    baseline_uncertainties: set[str] = (set(stored.get('baseline_uncertainties', [])) if stored else set())
+    if original_job.source_path is not None:
+        baseline_uncertainties.update(source_uncertainties)
     generator_response_id: str | None = None
     if stored:
         report.source_inventory = list(stored.get('source_inventory', []))
@@ -369,7 +371,7 @@ def run_job(
                 report.review_findings = []
                 report.review_uncertainties = []
                 report.content_findings = []
-                report.content_uncertainties = []
+                report.content_uncertainties = list(source_uncertainties) if original_tex is not None else []
                 if original_tex is not None:
                     assert state.main_tex is not None
                     guard = improvement_guard(original_tex,
@@ -385,7 +387,9 @@ def run_job(
                         break
                 # Requirements are always reviewed BEFORE quality and after every
                 # refinement. Non-reproduction jobs use an independent audit too.
-                if not job.config.review.reproduction:
+                if not job.config.review.reproduction and not (
+                    original_tex is not None and
+                    state.main_tex.read_text(encoding='utf-8') == original_tex):
                     if not _may_turn(report, job):
                         report.review_uncertainties.append('Budget exhausted before requirements validation')
                         report.status = 'needs_review'
@@ -398,6 +402,7 @@ def run_job(
                             raise ContextAgentError(f'Unable to render generated PDF for requirements audit: {exc}') from exc
                         all_findings = []
                         all_uncertainties = []
+                        new_regressions: list[QualityFinding] = []
                         assert state.main_pdf is not None and state.context_log is not None
                         assert state.include_snapshot is not None
                         evidence = verified_evidence(
@@ -415,11 +420,25 @@ def run_job(
                                 previous_response_id=None, pages=batch, report=report,
                                 transcript_path=transcript_path, phase='review-requirements')
                             result = parse_requirements(checked.output_text)
-                            all_findings.extend(result.findings)
+                            if original_tex is not None:
+                                regressions, unverified = verify_regressions(
+                                    result, original_tex, state.main_tex.read_text(encoding='utf-8'))
+                                new_regressions.extend(regressions)
+                                all_uncertainties.extend(unverified)
+                                if result.findings and not result.regressions:
+                                    all_uncertainties.append(
+                                        'Improve-Audit meldet einen Mangel ohne belegte neue '
+                                        'Quelländerung: ' + '; '.join(
+                                        f.message for f in result.findings))
+                                # For improve, unchanged pre-existing problems are
+                                # *not* regressions and do not block quality fixes.
+                            else:
+                                all_findings.extend(result.findings)
                             all_uncertainties.extend(result.uncertainties)
                             if result.status == 'uncertain' and not result.uncertainties:
                                 all_uncertainties.append('Requirements not verifiable with available evidence')
-                        report.content_findings = list(all_findings)
+                        report.content_findings = list(new_regressions if original_tex is not None
+                                                       else all_findings)
                         report.content_uncertainties = list(all_uncertainties)
                         if original_tex is not None:
                             report.content_uncertainties = list(dict.fromkeys(
@@ -434,24 +453,20 @@ def run_job(
                     })
                     checkpoint('requirements-reviewed')
                     if original_tex is not None:
-                        current_problems = {f.message for f in report.content_findings}
-                        current_ambiguities = set(report.content_uncertainties)
-                        if baseline_requirement_findings is None:
-                            baseline_requirement_findings = current_problems
-                            baseline_uncertainties = current_ambiguities
-                        elif was_quality_repair:
-                            new = current_problems - baseline_requirement_findings
-                            if new:
-                                _restore_validated(job.result_dir, last_validated)
-                                state = _artifact_state(job.result_dir)
-                                report.quality_journal.append({'event':'rollback',
-                                    'reason':'new requirements failure', 'findings':sorted(new)})
-                                report.status = 'needs_review'
-                                break
+                        # Evidence-anchored, changed regressions are independent
+                        # of the baseline reviewer's wording and page batching.
+                        if report.content_findings:
+                            _restore_validated(job.result_dir, last_validated)
+                            state = _artifact_state(job.result_dir)
+                            report.quality_journal.append({'event':'rollback',
+                                'reason':'verified new requirements regression',
+                                'findings':[f.message for f in report.content_findings]})
+                            report.status = 'needs_review'
+                            break
                         report.quality_journal.append({'event':'improve_requirements_delta',
-                            'preexisting': sorted(baseline_requirement_findings),
-                            'current': sorted(current_problems),
-                            'baseline_uncertainties': sorted(baseline_uncertainties)})
+                            'new_regressions': [],
+                            'uncertainties': list(report.content_uncertainties),
+                            'source_sha256': _source_digest(state)})
                     if report.content_findings and original_tex is None:
                         if was_quality_repair:
                             _restore_validated(job.result_dir, last_validated)
@@ -481,7 +496,7 @@ def run_job(
                     if report.content_uncertainties and not rules and original_tex is None:
                         report.status = 'needs_review'
                         break
-                else:
+                elif job.config.review.reproduction:
                     report.content_uncertainties = list(source_uncertainties)
                     progress('Unabhängige Inhaltsprüfung gestartet')
 

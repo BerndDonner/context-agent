@@ -97,11 +97,21 @@ def start(process_id: str, cwd: str | None, argv: list[str]) -> dict:
     if not argv:
         raise ValueError('missing command to execute')
     directory = job_dir(process_id)
+    command_cwd = str(Path(cwd).resolve()) if cwd else os.getcwd()
     try:
         directory.mkdir(mode=0o700)
-    except FileExistsError as exc:
-        raise ValueError(f'process id already exists: {process_id}') from exc
-    command_cwd = str(Path(cwd).resolve()) if cwd else os.getcwd()
+    except FileExistsError:
+        # Exactly-once effect despite lost API responses and retried START.
+        # A new command with a reused process ID is never accepted.
+        existing = read_json(directory / 'state.json')
+        for _ in range(30):
+            if existing:
+                break
+            time.sleep(0.02)
+            existing = read_json(directory / 'state.json')
+        if existing.get('argv') != argv or existing.get('cwd') != command_cwd:
+            raise ValueError(f'process id already exists with different command: {process_id}')
+        return report(process_id, 1000)
     if not Path(command_cwd).is_dir():
         directory.rmdir()
         raise ValueError(f'working directory does not exist: {command_cwd}')

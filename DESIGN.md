@@ -92,10 +92,23 @@ bei verbleibender Unsicherheit. `.validated/` bleibt dem semantisch
 überprüften Abschlussergebnis vorbehalten.
 Dies ist bewusst keine Missdeutung von `resume`.
 
-Die Requirementsprüfung bekommt Quelltext und Unified-Diff von Original zu
-Ergebnis. Fehler/Unsicherheiten der Ausgangsfassung werden getrennt von neuen
-Fehlern dokumentiert. Neue Befunde oder nachweislich geänderte Zahl-Literal-
-Inventare werden zurückgesetzt. Die Ausgangsdatei und Referenzen werden
+Für `improve` entfällt die redundante unabhängige Requirements-Prüfung
+*vor der ersten Änderung*: Der noch unveränderte Ausgangszustand kann das
+Verbesserungsziel definitionsgemäß nicht erfüllen. Nach der ersten Änderung
+prüft ein unabhängiger Reviewer weiterhin Originalauftrag, Quelltext, Diff,
+Layout und original PDF-Referenzen (als tatsächliche PDF-Inputs, nicht nur
+Dateinamen). Eine **neue** Regression wird nur dann zum Rollback-Grund, wenn
+der Reviewer eine tatsächliche geänderte Quellpassage auf beiden Seiten
+belegt. Unbelegte Verdachtsfälle bleiben `needs_review`. Wörtliche Unterschiede
+zwischen frei formulierten Baseline-/Folge-Reviews sind KEIN Regressionstest.
+Der numerische Guard bleibt davon unabhängig strikt.
+
+Die Hosted-Shell-Brücke kann unvollständige oder noch laufende Responses
+mit derselben Response-ID abfragen. Eine fehlende Bestätigung erlaubt nur
+die Wiederholung desselben idempotenten Auftrags mit derselben Prozess-ID.
+Der Supervisor akzeptiert ein zweites `start` nur bei identischen Argumenten
+und identischem Arbeitsverzeichnis. Die tatsächliche Ausführung bleibt
+höchstens einmalig; eine abweichende Anfrage unter derselben ID scheitert. Die Ausgangsdatei und Referenzen werden
 per Fingerprint gegen lokale Veränderungen geschützt. Im `changes.diff`
 bleibt die Änderung nachprüfbar. Offene Altfälle bleiben `needs_review`.
 

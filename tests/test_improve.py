@@ -174,3 +174,39 @@ def test_inherited_source_scan_markers_stay_open_even_if_audit_passes(tmp_path, 
     report = run_job(root, session_factory=lambda job,*_: ImproveSession(job))
     assert report.status == 'needs_review'
     assert 'Vorzeichen' in (root/'result/uncertainties.md').read_text()
+
+
+def test_verified_delta_regression_rolls_back_without_baseline_review(tmp_path, job_factory):
+    root = improve_job(tmp_path, job_factory)
+    configure_bad_word_rule(root)
+    audits = []
+    class Regressing(ImproveSession):
+        def review_pages(self, prompt, previous_response_id, pages):
+            if 'UNABHÄNGIGE REQUIREMENTS VALIDATION' in prompt:
+                audits.append(prompt)
+                # Only after GOOD has been written; previous source was never audited.
+                assert 'BAD' in prompt and 'GOOD' in prompt
+                return self._turn('review', '''{"status":"failed","findings":[],
+                    "uncertainties":[],"regressions":[{"message":"meaning changed",
+                    "original_excerpt":"BAD 1{,}5 V","updated_excerpt":"GOOD 1{,}5 V"}]}''')
+            return super().review_pages(prompt, previous_response_id, pages)
+    report = run_job(root, session_factory=lambda job,*_: Regressing(job))
+    assert report.status == 'needs_review'
+    assert len(audits) == 1  # no 4x baseline re-audit
+    assert 'BAD' in (root/'result/main.tex').read_text()
+    assert any('verified new requirements regression' in item.get('reason', '')
+               for item in report.quality_journal)
+
+
+def test_regression_verification_requires_same_changed_hunk():
+    from context_agent.requirements import parse_result, verify_regressions
+    base = 'alpha\nBAD\nother\n'
+    updated = 'alpha\nGOOD\nother\n'
+    valid = parse_result('''{"status":"failed","findings":[],"uncertainties":[],
+       "regressions":[{"message":"changed","original_excerpt":"BAD","updated_excerpt":"GOOD"}]}''')
+    findings, uncertainties = verify_regressions(valid,base,updated)
+    assert len(findings) == 1 and not uncertainties
+    ungrounded = parse_result('''{"status":"failed","findings":[],"uncertainties":[],
+       "regressions":[{"message":"imaginary","original_excerpt":"other","updated_excerpt":"GOOD"}]}''')
+    findings, uncertainties = verify_regressions(ungrounded,base,updated)
+    assert not findings and len(uncertainties) == 1

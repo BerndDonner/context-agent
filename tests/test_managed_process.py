@@ -61,10 +61,14 @@ def test_duplicate_id_cannot_execute_command_twice(tmp_path: Path):
     env = dict(os.environ, CONTEXT_AGENT_PROCESS_DIR=str(tmp_path))
     duplicate = subprocess.run([sys.executable, str(SCRIPT), 'start', 'same', '--', *command],
                                env=env, capture_output=True, text=True, timeout=12)
-    assert duplicate.returncode == 2
-    assert 'already exists' in duplicate.stderr
+    assert duplicate.returncode == 0  # identical START is idempotent
     assert invoke(tmp_path, 'wait', 'same', '--seconds', '3')['exit_code'] == 0
     assert output.read_text() == 'once'
+    different = subprocess.run([sys.executable, str(SCRIPT), 'start', 'same', '--',
+                                sys.executable, '-c', 'print("different")'],
+                               env=env, capture_output=True, text=True, timeout=12)
+    assert different.returncode == 2
+    assert 'different command' in different.stderr
 
 
 def test_cancel_terminates_process_group_and_records_real_exit(tmp_path: Path):

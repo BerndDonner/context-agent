@@ -52,6 +52,10 @@ class UploadedFile:
     file_id: str
 
 
+class BridgeOutcomeUnknown(RemoteAgentError):
+    """The API did not confirm a bridge call; its side effect may have occurred."""
+
+
 class OpenAIHostedSession:
     """One OpenAI Responses API session backed by a hosted shell container."""
 
@@ -187,6 +191,18 @@ class OpenAIHostedSession:
         for page in review_pages:
             uploaded = self._upload(page)
             review_content.append({"type": "input_image", "file_id": uploaded.file_id, "detail": "high"})
+        # A read-only auditor has NO access to the generator container. In an
+        # improve job, explicitly attach the original reference scans instead
+        # of merely mentioning their paths. PDF input_file carries page images.
+        if is_review and self.job.source_path is not None and review_pages:
+            for reference in self.job.references:
+                uploaded = self._upload(reference)
+                suffix = reference.suffix.lower()
+                if suffix == '.pdf':
+                    review_content.append({"type": "input_file", "file_id": uploaded.file_id})
+                elif suffix in ('.png', '.jpg', '.jpeg', '.webp'):
+                    review_content.append({"type": "input_image", "file_id": uploaded.file_id,
+                                           "detail": "high"})
 
         kwargs: dict[str, Any] = {
             "model": self.job.config.model,
@@ -311,35 +327,57 @@ class OpenAIHostedSession:
         """
         if self.container_id is None:
             raise RemoteAgentError("hosted container unavailable for managed process")
-        response = self._client.responses.create(
-            model=self.job.config.model,
-            instructions=("You are an execution bridge. Run exactly the provided shell "
-                          "command once, without changes or additional actions."),
-            input=[{"role": "user", "content": [{"type": "input_text", "text":
-                "Execute exactly this command once, then stop:\n" + command}]}],
-            tools=[{"type": "shell", "environment": {
-                "type": "container_reference", "container_id": self.container_id}}],
-            tool_choice="required", parallel_tool_calls=False,
-            max_output_tokens=1200, store=True,
-            **({"service_tier": "default"} if self.job.config.processing.mode == "standard"
-               else {"service_tier": "flex"} if self.job.config.processing.mode == "flex" else {}),
-            **({"reasoning": {"effort": "low"}}
-               if self.job.config.model == "gpt-6.1-sol" else {}),
-        )
+        try:
+            response = self._client.responses.create(
+                model=self.job.config.model,
+                instructions=("You are an execution bridge. Run exactly the provided shell "
+                              "command once, without changes or additional actions."),
+                input=[{"role": "user", "content": [{"type": "input_text", "text":
+                    "Execute exactly this command once, then stop:\n" + command}]}],
+                tools=[{"type": "shell", "environment": {
+                    "type": "container_reference", "container_id": self.container_id}}],
+                tool_choice="required", parallel_tool_calls=False,
+                max_output_tokens=1200, store=True,
+                **({"service_tier": "default"} if self.job.config.processing.mode == "standard"
+                   else {"service_tier": "flex"} if self.job.config.processing.mode == "flex" else {}),
+                **({"reasoning": {"effort": "low"}}
+                   if self.job.config.model == "gpt-6.1-sol" else {}),
+            )
+        except Exception as exc:
+            # The request might have reached the server before a connection
+            # failure. NEVER assume that the shell command was not executed.
+            raise BridgeOutcomeUnknown(f"managed shell response unknown: {exc}") from exc
+        # A response may still be running when create returns. Retrieve the
+        # SAME response ID, not a second command. Use a bounded wait.
+        for pause in (0.5, 1.0, 2.0, 3.0):
+            if getattr(response, 'status', None) != 'in_progress':
+                break
+            time.sleep(pause)
+            try:
+                response = self._client.responses.retrieve(str(response.id))
+            except Exception as exc:
+                raise BridgeOutcomeUnknown(
+                    f"unable to retrieve running shell response {response.id}: {exc}") from exc
         raw = _model_dump(response)
-        if getattr(response, "status", None) != "completed":
-            raise RemoteAgentError("managed shell bridge Response did not complete")
+        if getattr(response, 'status', None) != 'completed':
+            raise BridgeOutcomeUnknown(
+                f"managed shell response {response.id} status={getattr(response, 'status', None)!r} "
+                f"details={raw.get('incomplete_details')!r}")
         calls = [entry for entry in raw.get("output", [])
                  if isinstance(entry, dict) and entry.get("type") == "shell_call"]
         outputs = [entry for entry in raw.get("output", [])
                    if isinstance(entry, dict) and entry.get("type") == "shell_call_output"]
-        if len(calls) != 1 or calls[0].get("action", {}).get("commands") != [command]:
+        if len(calls) != 1:
+            raise BridgeOutcomeUnknown("managed shell returned no unique tool call")
+        if calls[0].get("action", {}).get("commands") != [command]:
             raise RemoteAgentError("managed shell bridge changed the approved command")
+        if not outputs:
+            raise BridgeOutcomeUnknown("managed shell output not yet available")
         if len(outputs) != 1 or outputs[0].get("call_id") != calls[0].get("call_id"):
             raise RemoteAgentError("managed shell result does not match approved command")
         statuses = (calls[0].get("status"), outputs[0].get("status"))
         if "incomplete" in statuses:
-            raise RemoteAgentError("managed shell output was incomplete")
+            raise BridgeOutcomeUnknown("managed shell output was incomplete")
         if any(value not in (None, "completed", "in_progress") for value in statuses):
             raise RemoteAgentError("managed shell returned an unknown execution status")
         if "in_progress" in statuses:
@@ -384,20 +422,38 @@ class OpenAIHostedSession:
                    + shlex.join(argv))
         responses: list[dict[str, Any]] = []
         ids: list[str] = []
-        def bridge(cmd: str) -> dict[str, Any] | None:
-            if max_api_calls is not None and len(responses) >= max_api_calls:
-                raise RemoteAgentError("managed process exhausted max_agent_turns")
-            data, raw, response_id = self._managed_shell(cmd)
-            responses.append(raw)
-            ids.append(response_id)
-            if data is not None and data.get("id") != process_id:
-                raise RemoteAgentError("managed-process returned a mismatched ID")
-            return data
+        def bridge(cmd: str, *, read_only: bool = False) -> dict[str, Any] | None:
+            for attempt in range(3):
+                if max_api_calls is not None and len(responses) >= max_api_calls:
+                    raise RemoteAgentError("managed process exhausted max_agent_turns")
+                try:
+                    data, raw, response_id = self._managed_shell(cmd)
+                except BridgeOutcomeUnknown:
+                    if attempt == 2:
+                        raise
+                    # Read operations may be retried. A START is also safe to
+                    # reissue with the SAME ID, because the container-side
+                    # supervisor validates and deduplicates its argv and cwd.
+                    continue
+                responses.append(raw)
+                ids.append(response_id)
+                if data is not None and data.get("id") != process_id:
+                    raise RemoteAgentError("managed-process returned a mismatched ID")
+                return data
+            raise AssertionError('bridge retry loop exhausted')
 
         deadline = time.monotonic() + float(self.job.config.limits.timeout_seconds)
         launched = False
         try:
-            state = bridge(command)
+            try:
+                state = bridge(command)
+            except BridgeOutcomeUnknown:
+                # All START acknowledgements were lost. Probe the durable
+                # supervisor before giving up: the child might already exist.
+                state = bridge(f"python3 {shlex.quote(self.PROCESS_MANAGER)} status "
+                               f"{shlex.quote(process_id)}", read_only=True)
+                if state is None or state.get('status') == 'not_found':
+                    raise BridgeOutcomeUnknown('START outcome still unknown after status probe')
             launched = True
             if state is not None and state.get("status") in ("failed", "not_found"):
                 raise RemoteAgentError(f"managed process failed to start: {state}")
@@ -410,7 +466,8 @@ class OpenAIHostedSession:
                     raise RemoteAgentError("managed process exceeded configured job deadline")
                 seconds = min(6.0, max(0.0, deadline - time.monotonic()))
                 state = bridge(f"python3 {shlex.quote(self.PROCESS_MANAGER)} wait "
-                               f"{shlex.quote(process_id)} --seconds {seconds:.2f}")
+                               f"{shlex.quote(process_id)} --seconds {seconds:.2f}",
+                               read_only=True)
             if state is None:
                 raise RemoteAgentError("managed process returned no final state")
             if state.get("status") != "exited" or state.get("exit_code") != 0:
@@ -428,7 +485,7 @@ class OpenAIHostedSession:
                     piece = bridge(
                         f"python3 {shlex.quote(self.PROCESS_MANAGER)} read "
                         f"{shlex.quote(process_id)} --stream stdout "
-                        f"--offset {offset} --length 4096")
+                        f"--offset {offset} --length 4096", read_only=True)
                     if piece is None:
                         continue
                     if (piece.get('stream') != 'stdout' or piece.get('offset') != offset

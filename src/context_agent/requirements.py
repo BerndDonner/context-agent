@@ -20,6 +20,7 @@ class RequirementsResult:
     status: str
     findings: tuple[QualityFinding, ...]
     uncertainties: tuple[str, ...]
+    regressions: tuple[dict[str, str], ...] = ()
 
 
 def verified_evidence(
@@ -104,7 +105,22 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
     from context_agent.improvement import improvement_diff
     changed = (improvement_diff(baseline, tex) if baseline is not None else "")
     facts = json.dumps(evidence or {}, ensure_ascii=False, indent=2)
-    return ("UNABHÄNGIGE REQUIREMENTS VALIDATION. Prüfe ausschließlich gegen den ORIGINALAUFTRAG, "
+    improve_instruction = ("IMPROVE-DELTA-AUDIT: Bewerte AUSSCHLIESSLICH NEU durch die gezeigten "
+        "ÄNDERUNGEN eingeführte inhaltliche oder Layout-Regressionen. "
+        "Unveränderte Ausgangsmängel, vorhandene Scanunsicherheiten und noch "
+        "nicht vollständig erledigte Formatierungsziele sind KEINE Regressionen. "
+        "Formatierungsfortschritt beurteilen die ausgewählten Checker. "
+        "Für jede neue Regression liefere unter regressions ein Objekt mit "
+        "message, original_excerpt und updated_excerpt (exakte, nichtleere "
+        "Teilzeichenfolgen aus den beigefügten ConTeXt-Quellen, in der "
+        "betroffenen geänderten Passage). Ohne belegbare veränderte "
+        "Quellpassage keine Regression behaupten; dann uncertainties nutzen. "
+        "Nutze das beigefügte ORIGINAL-PDF nur zur Klärung schwieriger Stellen; "
+        "wenn es beigefügt ist, behaupte NICHT es liege nicht vor. "
+        "Antworte mit JSON-Feld regressions zusätzlich zu den anderen Feldern. "
+        if baseline is not None else "")
+    return ("UNABHÄNGIGE REQUIREMENTS VALIDATION. " + improve_instruction +
+            "Prüfe ausschließlich gegen den ORIGINALAUFTRAG, "
             "Template und Quellen; NIEMALS allein gegen eine Zwischenfassung. "
             "Kontrolliere Inhalt, Zahlen, Formeln, Vollständigkeit und, soweit die "
             f"{pages} Ausgabeseitenbilder reichen, sichtbares Layout. "
@@ -119,7 +135,8 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
             "Keine nicht belegten Beanstandungen. JSON ohne Markdown: "
             '{"status":"passed|failed|uncertain","findings":['
             '{"message":"konkreter Fehler","file":"main.tex","line":null}],'
-            '"uncertainties":["..." ]}.\n'
+            '"uncertainties":["..." ],"regressions":['
+            '{"message":"...","original_excerpt":"...","updated_excerpt":"..."}]}.\n'
             f'MODUS: {job.config.mode.value}\nORIGINALAUFTRAG:\n{task}\nTEMPLATE:\n{template}\n'
             f'ORIGINALDATEI (bei improve verbindliche Baseline):\n{(baseline or "")[:60000]}\n'
             f'ÄNDERUNGEN GEGEN ORIGINALDATEI:\n{changed[:45000]}\n'
@@ -150,6 +167,42 @@ def parse_result(output: str) -> RequirementsResult:
     uncertainties=tuple(str(x) for x in data['uncertainties'] if isinstance(x,str))
     if data['status'] == 'passed' and (findings or uncertainties):
         raise ContextAgentError('requirements review cannot pass with findings or uncertainties')
-    if data['status'] == 'failed' and not findings:
+    if data['status'] == 'failed' and not findings and not data.get('regressions'):
         raise ContextAgentError('failed requirements review must provide an evidence-backed finding')
-    return RequirementsResult(data['status'],tuple(findings),uncertainties)
+    regressions = data.get('regressions', [])
+    if not isinstance(regressions, list):
+        raise ContextAgentError('requirements review returned invalid regressions')
+    validated = []
+    for entry in regressions:
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) and
+                entry[key].strip() for key in ('message','original_excerpt','updated_excerpt')):
+            raise ContextAgentError('requirements review returned invalid regression evidence')
+        validated.append({key: entry[key] for key in
+                          ('message','original_excerpt','updated_excerpt')})
+    if data['status'] == 'passed' and validated:
+        raise ContextAgentError('requirements review cannot pass with regressions')
+    return RequirementsResult(data['status'],tuple(findings),uncertainties,tuple(validated))
+
+
+def verify_regressions(result: RequirementsResult, original: str,
+                       updated: str) -> tuple[list[QualityFinding], list[str]]:
+    """Only accept regressions with actual, changed, source-anchored evidence.
+
+    Never compare language-model wording from independent baseline reviews.
+    Inconclusive evidence cannot prove a regression and stays needs_review.
+    """
+    verified: list[QualityFinding] = []
+    uncertainties: list[str] = []
+    from difflib import SequenceMatcher
+    old_lines, new_lines = original.splitlines(), updated.splitlines()
+    changed = [('\n'.join(old_lines[i:j]), '\n'.join(new_lines[k:l]))
+               for tag,i,j,k,l in SequenceMatcher(None,old_lines,new_lines,autojunk=False).get_opcodes()
+               if tag != 'equal']
+    for entry in result.regressions:
+        old, new = entry['original_excerpt'], entry['updated_excerpt']
+        anchored = any(old in before and new in after for before,after in changed)
+        if (not anchored or old == new):
+            uncertainties.append('Nicht verifizierbare geänderte Passage: ' + entry['message'])
+            continue
+        verified.append(QualityFinding('original-requirements',entry['message'],'main.tex'))
+    return verified, uncertainties

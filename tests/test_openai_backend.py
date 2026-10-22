@@ -516,3 +516,47 @@ def test_managed_bridge_with_real_local_supervisor_and_large_output(
     assert remote.counter >= 4  # start, wait, and output chunks
     assert turn.api_calls == remote.counter
     assert turn.usage['total_tokens'] == remote.counter * 3
+
+
+def test_improve_review_attaches_original_pdf_reference(tmp_path: Path, job_factory) -> None:
+    root = job_factory(tmp_path)
+    (root / 'input' / 'main.tex').write_text('\\starttext Test\\stoptext')
+    scan = root / 'input' / 'scan.pdf'
+    scan.write_bytes(b'%PDF-test')
+    yaml = root / 'job.yaml'
+    yaml.write_text(yaml.read_text().replace('mode: create',
+        'mode: improve\nsource:\n  path: input/main.tex').replace(
+        'references: []', 'references:\n  - input/scan.pdf'))
+    session = object.__new__(OpenAIHostedSession)
+    session.job = load_job(root)
+    session.direct_files = ()
+    session.system_prompt = 'system'
+    session.container_id = 'container-1'
+    session._uploaded = []
+    session._client = FakeClient()
+    session._upload = lambda path: UploadedFile(path, 'original-pdf' if path == scan else 'output-image')
+    output = tmp_path / 'output.png'
+    output.write_bytes(b'page')
+    session.review_pages('inspect reference', None, (output,))
+    content = session._client.responses.calls[0]['input'][0]['content']
+    assert content[-1] == {'type':'input_file','file_id':'original-pdf'}
+    assert content[-2]['file_id'] == 'output-image'
+    assert 'tools' not in session._client.responses.calls[0]
+
+
+def test_bridge_retries_unknown_response_with_same_process_id(tmp_path: Path, job_factory):
+    session, state = _managed_test_session(tmp_path, job_factory)
+    original_create = session._client.responses.create
+    attempts = {'n': 0}
+    def sometimes_incomplete(**kwargs):
+        attempts['n'] += 1
+        if attempts['n'] == 1:
+            return SimpleNamespace(id='resp-incomplete',status='incomplete',
+                   model_dump=lambda mode: {'incomplete_details':{'reason':'max_output_tokens'}})
+        return original_create(**kwargs)
+    session._client.responses.create = sometimes_incomplete
+    _, turn = session.run_managed_command(
+        ['python3','-c','print("some output")'], max_api_calls=10)
+    assert attempts['n'] >= 3
+    assert len(turn.raw['response_ids']) >= 1
+    assert len(state['calls']) >= 2
