@@ -186,3 +186,20 @@ Die Original-PDF-Referenz wird unabhängigen Improve-Reviewern als `input_file`
 mitgeschickt. Das erhöht den Preis der unabhängigen Reviews, liefert ihnen aber
 die Scaninformation tatsächlich. Noch kein erneuter Hosted-End-to-End-Test
 mit Produktions-API-Key durchgeführt.
+
+### Diagnose bei Hosted-Fehlern (0.9.2)
+
+Bei jedem Lauf des OpenAI-Backends entsteht `result/execution-events.jsonl`.
+Die Ereignisse enthalten nur technische Metadaten (Zeitstempel, IDs, Status,
+Prozessschritte, Upload-Prüfsumme und -Größe, Retry, Fehlerklassen und
+Tokenverbrauch), **keine** Shell-Befehle, Quelldatei- oder Edit-Inhalte.
+Auch fehlgeschlagene Starts/Statusabfragen und Rollbacks sind erfasst.
+Zum Debugging nach einem `needs_review` bitte neben `report.json`,
+`checkpoint.json`, `changes.diff` und `transcript.jsonl` dieses Log mitgeben.
+`transcript.jsonl` kann dagegen vollständige Modell- und Toolausgaben
+enthalten und sollte vor einer Weitergabe auf sensitive Inhalte geprüft werden.
+
+Große deterministische Qualitätskorrekturen werden nicht mehr als Base64-
+Shell-Argument gesendet. Der Host lädt sie direkt über die Container-Files-API
+als JSON hoch und übergibt nur Pfad und SHA-256 an den Prozess-Supervisor.
+Die Original-Quellhashes werden zusätzlich im Remote-Apply-Skript geprüft.

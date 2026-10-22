@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import uuid
 import json
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
+from context_agent.diagnostics import exception_metadata, record_event
 from context_agent.errors import ArtifactError, RemoteAgentError
 from context_agent.models import AgentTurn, ResolvedJob
 
@@ -84,7 +86,14 @@ class OpenAIHostedSession:
         self.container_id: str | None = None
         self._uploaded: list[UploadedFile] = []
         self._client = self._create_client(job.config.limits.timeout_seconds)
+        self._event("hosted_session_start", phase="setup")
         self._prepare_remote()
+
+    def _event(self, name: str, **details: Any) -> None:
+        path = getattr(self, '_diagnostics_path', None)
+        if path is None:
+            path = self.job.result_dir / 'execution-events.jsonl'
+        record_event(path, name, **details)
 
     @staticmethod
     def _create_client(timeout_seconds: int) -> Any:
@@ -128,9 +137,12 @@ class OpenAIHostedSession:
                     expires_after={"anchor": "created_at", "seconds": 86400},
                 )
         except Exception as exc:
-            raise RemoteAgentError(f"failed to upload {path}: {exc}") from exc
+            self._event('source_upload_failed', phase='setup', **exception_metadata(exc))
+            raise RemoteAgentError(f"failed to upload {path.name}: {type(exc).__name__}") from exc
         uploaded = UploadedFile(path=path, file_id=str(remote.id))
         self._uploaded.append(uploaded)
+        self._event("source_uploaded", phase="setup", file_id=uploaded.file_id,
+                    payload_bytes=path.stat().st_size)
         return uploaded
 
     def _prepare_remote(self) -> None:
@@ -160,8 +172,10 @@ class OpenAIHostedSession:
                     expires_after={"anchor": "last_active_at", "minutes": expires_minutes},
                 )
             except Exception as exc:
-                raise RemoteAgentError(f"failed to create hosted container: {exc}") from exc
+                self._event('container_create_failed', phase='setup', **exception_metadata(exc))
+                raise RemoteAgentError(f"failed to create hosted container: {type(exc).__name__}") from exc
             self.container_id = str(container.id)
+            self._event("container_ready", phase="setup", container_id=self.container_id)
 
         if bundle.file_id == context_bundle.file_id:  # defensive; should never happen
             raise RemoteAgentError("job bundle and ConTeXt bundle received identical file IDs")
@@ -247,12 +261,25 @@ class OpenAIHostedSession:
         if previous_response_id is not None:
             kwargs["previous_response_id"] = previous_response_id
 
+        self._event('agent_api_request', phase='review' if is_review else 'generation',
+                    container_id=None if is_review else self.container_id,
+                    max_output_tokens=self.job.config.limits.max_output_tokens)
+        started = time.monotonic()
         try:
             response = self._client.responses.create(**kwargs)
         except Exception as exc:
-            raise RemoteAgentError(f"Responses API call failed: {exc}") from exc
+            self._event('agent_api_error', phase='review' if is_review else 'generation',
+                        elapsed_ms=int((time.monotonic()-started)*1000),
+                        **exception_metadata(exc))
+            raise RemoteAgentError(f"Responses API call failed: {type(exc).__name__}") from exc
 
         raw = _model_dump(response)
+        self._event('agent_api_response', phase='review' if is_review else 'generation',
+                    response_id=str(response.id),
+                    request_id=getattr(response, '_request_id', None),
+                    response_status=str(getattr(response, 'status', 'unknown')),
+                    elapsed_ms=int((time.monotonic()-started)*1000),
+                    total_tokens=(raw.get('usage') or {}).get('total_tokens'))
         raw_usage: object = raw.get("usage")
         usage = cast(dict[str, Any], raw_usage) if isinstance(raw_usage, dict) else {}
         return AgentTurn(
@@ -289,6 +316,7 @@ class OpenAIHostedSession:
             )
             remote_files = list(page)
         except Exception as exc:
+            self._event("result_list_failed", phase="sync", **exception_metadata(exc))
             raise ArtifactError(f"failed to list container files: {exc}") from exc
 
         selected: dict[str, Any] = {}
@@ -312,10 +340,12 @@ class OpenAIHostedSession:
                 )
                 data = _binary_content(content)
             except Exception as exc:
+                self._event("result_download_failed", phase="sync", **exception_metadata(exc))
                 raise ArtifactError(f"failed to download {local_name}: {exc}") from exc
             target = destination / local_name
             target.write_bytes(data)
             downloaded[local_name] = target
+        self._event("results_synced", phase="sync", file_count=len(downloaded))
         return downloaded
 
     def _managed_shell(self, command: str) -> tuple[dict[str, Any] | None, dict[str, Any], str]:
@@ -327,6 +357,10 @@ class OpenAIHostedSession:
         """
         if self.container_id is None:
             raise RemoteAgentError("hosted container unavailable for managed process")
+        started = time.monotonic()
+        self._event("bridge_request", phase="bridge", command_bytes=len(command.encode()),
+                    command_sha256=hashlib.sha256(command.encode()).hexdigest(),
+                    max_output_tokens=1200)
         try:
             response = self._client.responses.create(
                 model=self.job.config.model,
@@ -344,9 +378,12 @@ class OpenAIHostedSession:
                    if self.job.config.model == "gpt-6.1-sol" else {}),
             )
         except Exception as exc:
+            self._event("bridge_transport_error", phase="bridge", elapsed_ms=int(
+                (time.monotonic()-started)*1000), **exception_metadata(exc))
             # The request might have reached the server before a connection
             # failure. NEVER assume that the shell command was not executed.
-            raise BridgeOutcomeUnknown(f"managed shell response unknown: {exc}") from exc
+            raise BridgeOutcomeUnknown(
+                "managed shell response unknown (see execution-events.jsonl)") from exc
         # A response may still be running when create returns. Retrieve the
         # SAME response ID, not a second command. Use a bounded wait.
         for pause in (0.5, 1.0, 2.0, 3.0):
@@ -356,27 +393,57 @@ class OpenAIHostedSession:
             try:
                 response = self._client.responses.retrieve(str(response.id))
             except Exception as exc:
+                self._event("bridge_retrieve_failed", phase="bridge", response_id=str(response.id),
+                            **exception_metadata(exc))
                 raise BridgeOutcomeUnknown(
-                    f"unable to retrieve running shell response {response.id}: {exc}") from exc
+                    f"unable to retrieve running shell response {response.id} "
+                    "(see execution-events.jsonl)") from exc
         raw = _model_dump(response)
+        details = raw.get('incomplete_details')
+        incomplete_reason = (details.get('reason', 'unknown')
+                             if isinstance(details, dict) else 'unknown')
+        self._event("bridge_response", phase="bridge", response_id=str(response.id),
+                    request_id=getattr(response, '_request_id', None),
+                    response_status=str(getattr(response, 'status', 'unknown')),
+                    incomplete_reason=str(incomplete_reason),
+                    elapsed_ms=int((time.monotonic()-started)*1000),
+                    shell_calls=sum(1 for x in raw.get('output', [])
+                                    if isinstance(x, dict) and x.get('type') == 'shell_call'),
+                    shell_outputs=sum(1 for x in raw.get('output', [])
+                                      if isinstance(x, dict) and x.get('type') == 'shell_call_output'),
+                    total_tokens=(raw.get('usage') or {}).get('total_tokens'),
+                    output_tokens=(raw.get('usage') or {}).get('output_tokens'))
         if getattr(response, 'status', None) != 'completed':
             raise BridgeOutcomeUnknown(
-                f"managed shell response {response.id} status={getattr(response, 'status', None)!r} "
-                f"details={raw.get('incomplete_details')!r}")
+                f"managed shell response {response.id} "
+                f"status={getattr(response, 'status', None)!r}; "
+                "see execution-events.jsonl")
         calls = [entry for entry in raw.get("output", [])
                  if isinstance(entry, dict) and entry.get("type") == "shell_call"]
         outputs = [entry for entry in raw.get("output", [])
                    if isinstance(entry, dict) and entry.get("type") == "shell_call_output"]
+        if len(calls) == 1:
+            self._event('bridge_shell_call', phase='bridge', response_id=str(response.id),
+                        shell_call_status=calls[0].get('status'),
+                        shell_output_status=outputs[0].get('status') if len(outputs) == 1 else None)
         if len(calls) != 1:
+            self._event('bridge_rejected', phase='bridge', response_id=str(response.id),
+                        reason_code='tool_call_count')
             raise BridgeOutcomeUnknown("managed shell returned no unique tool call")
         if calls[0].get("action", {}).get("commands") != [command]:
+            self._event('bridge_rejected', phase='bridge', response_id=str(response.id),
+                        reason_code='command_mismatch')
             raise RemoteAgentError("managed shell bridge changed the approved command")
         if not outputs:
+            self._event('bridge_rejected', phase='bridge', response_id=str(response.id),
+                        reason_code='no_shell_output')
             raise BridgeOutcomeUnknown("managed shell output not yet available")
         if len(outputs) != 1 or outputs[0].get("call_id") != calls[0].get("call_id"):
             raise RemoteAgentError("managed shell result does not match approved command")
         statuses = (calls[0].get("status"), outputs[0].get("status"))
         if "incomplete" in statuses:
+            self._event('bridge_rejected', phase='bridge', response_id=str(response.id),
+                        reason_code='incomplete_shell_output')
             raise BridgeOutcomeUnknown("managed shell output was incomplete")
         if any(value not in (None, "completed", "in_progress") for value in statuses):
             raise RemoteAgentError("managed shell returned an unknown execution status")
@@ -386,6 +453,10 @@ class OpenAIHostedSession:
         if not isinstance(chunks, list) or len(chunks) != 1 or not isinstance(chunks[0], dict):
             raise RemoteAgentError("managed shell returned an invalid result")
         outcome = chunks[0].get("outcome", {})
+        self._event('bridge_shell_outcome', phase='bridge', response_id=str(response.id),
+                    exit_code=outcome.get('exit_code') if isinstance(outcome, dict) else None,
+                    stdout_bytes=len(str(chunks[0].get('stdout', '')).encode()),
+                    stderr_bytes=len(str(chunks[0].get('stderr', '')).encode()))
         if not isinstance(outcome, dict) or outcome.get("type") != "exit" or outcome.get("exit_code") != 0:
             raise RemoteAgentError(f"managed shell command failed: {outcome}; "
                                    f"stderr={chunks[0].get('stderr', '')!r}")
@@ -395,6 +466,8 @@ class OpenAIHostedSession:
         reports = [line[len(self.PROCESS_OUTPUT_MARKER):] for line in stdout.splitlines()
                    if line.startswith(self.PROCESS_OUTPUT_MARKER)]
         if len(reports) != 1:
+            self._event('bridge_rejected', phase='bridge', response_id=str(response.id),
+                        reason_code='missing_process_marker')
             raise RemoteAgentError(f"expected one managed-process status, got {len(reports)}")
         try:
             status = json.loads(reports[0])
@@ -417,6 +490,8 @@ class OpenAIHostedSession:
         if not argv:
             raise ValueError("managed command cannot be empty")
         process_id = process_id or uuid.uuid4().hex
+        self._event('process_requested', phase='process', process_id=process_id,
+                    argv_count=len(argv), operation=Path(argv[0]).name)
         command = ("python3 " + shlex.quote(self.PROCESS_MANAGER) + " start --cwd "
                    + shlex.quote(cwd) + " " + shlex.quote(process_id) + " -- "
                    + shlex.join(argv))
@@ -426,9 +501,15 @@ class OpenAIHostedSession:
             for attempt in range(3):
                 if max_api_calls is not None and len(responses) >= max_api_calls:
                     raise RemoteAgentError("managed process exhausted max_agent_turns")
+                self._event('process_bridge_attempt', phase='process', process_id=process_id,
+                            attempt=attempt+1, retry=attempt > 0,
+                            command_sha256=hashlib.sha256(cmd.encode()).hexdigest(),
+                            command_bytes=len(cmd.encode()), operation='read' if read_only else 'start')
                 try:
                     data, raw, response_id = self._managed_shell(cmd)
-                except BridgeOutcomeUnknown:
+                except BridgeOutcomeUnknown as exc:
+                    self._event('process_bridge_unknown', phase='process', process_id=process_id,
+                                attempt=attempt+1, exception_type=type(exc).__name__)
                     if attempt == 2:
                         raise
                     # Read operations may be retried. A START is also safe to
@@ -437,6 +518,9 @@ class OpenAIHostedSession:
                     continue
                 responses.append(raw)
                 ids.append(response_id)
+                self._event('process_bridge_ack', phase='process', process_id=process_id,
+                            attempt=attempt+1, response_id=response_id,
+                            process_status=data.get('status') if data else 'in_progress')
                 if data is not None and data.get("id") != process_id:
                     raise RemoteAgentError("managed-process returned a mismatched ID")
                 return data
@@ -444,12 +528,14 @@ class OpenAIHostedSession:
 
         deadline = time.monotonic() + float(self.job.config.limits.timeout_seconds)
         launched = False
+        state: dict[str, Any] | None = None
         try:
             try:
                 state = bridge(command)
             except BridgeOutcomeUnknown:
                 # All START acknowledgements were lost. Probe the durable
                 # supervisor before giving up: the child might already exist.
+                self._event('process_start_status_probe', phase='process', process_id=process_id)
                 state = bridge(f"python3 {shlex.quote(self.PROCESS_MANAGER)} status "
                                f"{shlex.quote(process_id)}", read_only=True)
                 if state is None or state.get('status') == 'not_found':
@@ -470,6 +556,9 @@ class OpenAIHostedSession:
                                read_only=True)
             if state is None:
                 raise RemoteAgentError("managed process returned no final state")
+            self._event('process_finished', phase='process', process_id=process_id,
+                        process_status=state.get('status'), exit_code=state.get('exit_code'),
+                        stdout_bytes=state.get('stdout_size'), stderr_bytes=state.get('stderr_size'))
             if state.get("status") != "exited" or state.get("exit_code") != 0:
                 raise RemoteAgentError(
                     f"managed process ended with status={state.get('status')!r}, "
@@ -509,7 +598,10 @@ class OpenAIHostedSession:
                 usage=usage, api_calls=len(responses),
             )
             return state, turn
-        except BaseException:
+        except BaseException as exc:
+            self._event('process_aborted', phase='process', process_id=process_id,
+                        exception_type=type(exc).__name__,
+                        process_status=state.get('status') if state else 'unknown')
             if launched and (state is None or state.get('status') not in
                              ('exited', 'failed', 'cancelled')):
                 # Best effort: never silently leave a job running after a local
@@ -525,9 +617,38 @@ class OpenAIHostedSession:
 
     def apply_quality_edits(self, edits: list[dict[str, Any]], *, max_api_calls: int) -> AgentTurn:
         """Apply optimistic guarded edits, compile, and collect includes remotely."""
-        payload = base64.b64encode(json.dumps(edits).encode('utf-8')).decode('ascii')
+        if self.container_id is None:
+            raise RemoteAgentError('quality edits require a hosted container')
+        payload = json.dumps(edits, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        digest = hashlib.sha256(payload).hexdigest()
+        self._event('quality_payload_preparing', phase='quality-autofix',
+                    payload_sha256=digest, payload_bytes=len(payload), edit_count=len(edits))
+        try:
+            uploaded = self._client.containers.files.create(
+                self.container_id,
+                file=('quality-edits.json', payload, 'application/json'),
+            )
+        except Exception as exc:
+            self._event('quality_payload_upload_failed', phase='quality-autofix',
+                        payload_sha256=digest, **exception_metadata(exc))
+            raise RemoteAgentError('failed to upload quality edits to hosted container') from exc
+        path = getattr(uploaded, 'path', None)
+        if (not isinstance(path, str) or not path.startswith('/mnt/data/')
+                or any(segment in ('.', '..') for segment in Path(path).parts)
+                or not path.endswith('.json')):
+            self._event('quality_payload_invalid_path', phase='quality-autofix',
+                        payload_sha256=digest)
+            raise RemoteAgentError('hosted quality payload path is invalid')
+        if getattr(uploaded, 'bytes', None) != len(payload):
+            self._event('quality_payload_wrong_size', phase='quality-autofix',
+                        payload_sha256=digest)
+            raise RemoteAgentError('hosted quality payload byte count mismatch')
+        self._event('quality_payload_uploaded', phase='quality-autofix', file_id=str(uploaded.id),
+                    remote_path=path, payload_sha256=digest, payload_bytes=len(payload),
+                    edit_count=len(edits))
         commands = [
-            ['python3', '/mnt/data/work/runtime/apply-quality-edits.py', '--payload', payload],
+            ['python3', '/mnt/data/work/runtime/apply-quality-edits.py',
+             '--edits-file', path, '--sha256', digest],
             ['bash', '/mnt/data/work/runtime/bootstrap-context.sh', '--compile',
              '/mnt/data/work/job/result/main.tex', '/mnt/data/work/job/result/context.log'],
             ['bash', '/mnt/data/work/runtime/collect-includes.sh', '/mnt/data/work/job'],
@@ -537,7 +658,19 @@ class OpenAIHostedSession:
             remaining = max_api_calls - sum(turn.api_calls for turn in turns)
             if remaining <= 0:
                 raise RemoteAgentError('insufficient API budget for quality edit validation')
-            _, turn = self.run_managed_command(argv, max_api_calls=remaining)
+            self._event('quality_step_start', phase='quality-autofix',
+                        stage=('apply', 'compile', 'includes')[len(turns)],
+                        payload_sha256=digest)
+            try:
+                _, turn = self.run_managed_command(argv, max_api_calls=remaining)
+            except Exception as exc:
+                self._event('quality_step_failed', phase='quality-autofix',
+                            stage=('apply', 'compile', 'includes')[len(turns)],
+                            exception_type=type(exc).__name__, payload_sha256=digest)
+                raise
+            self._event('quality_step_complete', phase='quality-autofix',
+                        stage=('apply', 'compile', 'includes')[len(turns)],
+                        api_calls=turn.api_calls, payload_sha256=digest)
             turns.append(turn)
         usage = _sum_usages([{'usage': t.usage} for t in turns])
         return AgentTurn(turns[-1].response_id, 'completed', '',
@@ -570,10 +703,12 @@ class OpenAIHostedSession:
 
     def close(self) -> None:
         if self.job.config.runtime.keep_remote:
+            self._event('container_retained', phase='cleanup', container_id=self.container_id)
             return
         if self.container_id is not None:
             with suppress(Exception):
                 self._client.containers.delete(self.container_id)
+                self._event('container_deleted', phase='cleanup', container_id=self.container_id)
         for item in self._uploaded:
             with suppress(Exception):
                 self._client.files.delete(item.file_id)

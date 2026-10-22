@@ -11,6 +11,7 @@ from pathlib import Path
 
 from context_agent.bundling import build_job_bundle, direct_model_files
 from context_agent.checkpoint import SCHEMA, fingerprint, read_checkpoint, save_checkpoint
+from context_agent.diagnostics import record_event
 from context_agent.content_audit import (
     InventoryEntry, missing_prompt, output_prompt, parse_inventory,
     parse_missing, parse_output_check, source_prompt,
@@ -755,6 +756,11 @@ def run_job(
                                     _restore_validated(job.result_dir, last_validated)
                                     state = _artifact_state(job.result_dir)
                                     report.quality_journal.append({'event':'rollback', 'reason':str(exc)})
+                                    record_event(job.result_dir / 'execution-events.jsonl',
+                                                 'quality_rollback', phase='quality-autofix',
+                                                 reason_code='remote_autofix_failed',
+                                                 exception_type=type(exc).__name__,
+                                                 source_sha256=digest)
                                     report.status = 'needs_review'
                                     break
                             else:
