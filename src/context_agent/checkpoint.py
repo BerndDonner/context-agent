@@ -17,6 +17,8 @@ CHECKPOINT_NAME = "checkpoint.json"
 def fingerprint(job: ResolvedJob) -> dict[str, str]:
     """Protect all inputs that affect the reproduced result (not output files)."""
     paths = [job.config_path, job.task_path, job.template_path, job.context_archive]
+    if job.source_path is not None:
+        paths.append(job.source_path)
     paths.extend(i.path for i in job.inputs)
     paths.extend(job.references)
     from context_agent.quality_rules import load_rules

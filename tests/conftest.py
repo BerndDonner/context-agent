@@ -31,6 +31,7 @@ def create_job(
                    if quality_directory is not None else "")
     (job / "job.yaml").write_text(
         f"""model: test-model
+mode: create
 task: task.md
 template:
   path: template/template.tex

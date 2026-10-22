@@ -49,6 +49,7 @@ def verified_evidence(
     snapshot_count = (len(read_include_snapshot(include_snapshot))
                       if include_snapshot.is_file() else None)
     protected = (job.config_path, job.task_path, job.template_path,
+                 *((job.source_path,) if job.source_path else ()),
                  *(item.path for item in job.inputs), *job.references)
     comparisons: dict[str, bool] = {}
     for path in protected:
@@ -98,6 +99,10 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
         else:
             sources.append(f'{item.relative_path}: {item.role}/{item.policy} (external source)')
     tex = main_tex.read_text(encoding='utf-8')
+    baseline = (job.source_path.read_text(encoding='utf-8')
+                if job.source_path is not None else None)
+    from context_agent.improvement import improvement_diff
+    changed = (improvement_diff(baseline, tex) if baseline is not None else "")
     facts = json.dumps(evidence or {}, ensure_ascii=False, indent=2)
     return ("UNABHÄNGIGE REQUIREMENTS VALIDATION. Prüfe ausschließlich gegen den ORIGINALAUFTRAG, "
             "Template und Quellen; NIEMALS allein gegen eine Zwischenfassung. "
@@ -115,7 +120,9 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
             '{"status":"passed|failed|uncertain","findings":['
             '{"message":"konkreter Fehler","file":"main.tex","line":null}],'
             '"uncertainties":["..." ]}.\n'
-            f'ORIGINALAUFTRAG:\n{task}\nTEMPLATE:\n{template}\n'
+            f'MODUS: {job.config.mode.value}\nORIGINALAUFTRAG:\n{task}\nTEMPLATE:\n{template}\n'
+            f'ORIGINALDATEI (bei improve verbindliche Baseline):\n{(baseline or "")[:60000]}\n'
+            f'ÄNDERUNGEN GEGEN ORIGINALDATEI:\n{changed[:45000]}\n'
             f'ORIGINALQUELLEN:\n{chr(10).join(sources)}\n'
             f'AUSGABESOURCE:\n{tex[:90000]}\n'
             f'VERIFIZIERTE TECHNISCHE EVIDENZ:\n{facts}')

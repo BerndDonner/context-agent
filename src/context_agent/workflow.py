@@ -18,6 +18,7 @@ from context_agent.content_audit import (
 from context_agent.errors import ContextAgentError
 from context_agent.job import load_job, prepare_result_directory
 from context_agent.include_sync import IncludeTransaction, read_include_snapshot
+from context_agent.improvement import improvement_guard, improvement_diff
 from context_agent.models import (
     AgentTurn,
     ContentPolicy,
@@ -36,7 +37,7 @@ from context_agent.requirements import (prompt as requirements_prompt,
                                         verified_evidence)
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
 from context_agent.progress import Progress
-from context_agent.scan_markers import visible_scan_markers
+from context_agent.scan_markers import visible_scan_markers, inherited_scan_uncertainties
 from context_agent.prompts import (
     load_prompt,
     render_initial_prompt,
@@ -115,6 +116,7 @@ def run_job(
     report = RunReport(
         status="running",
         model=job.config.model,
+        mode=job.config.mode.value,
         started_at=datetime.now(UTC),
         reasoning_effort=job.config.reasoning.effort,
         processing_mode=job.config.processing.mode,
@@ -129,7 +131,14 @@ def run_job(
     session: AgentSession | None = None
     input_fingerprint = fingerprint(original_job)
     source_uncertainties: list[str] = list(stored.get('source_uncertainties', [])) if stored else []
+    if original_job.source_path is not None:
+        source_uncertainties = list(dict.fromkeys(
+            source_uncertainties + inherited_scan_uncertainties(original_job.source_path)))
     phase_state = 'started'
+    baseline_requirement_findings: set[str] | None = (
+        set(stored['baseline_requirements']) if stored and
+        stored.get('baseline_requirements') is not None else None)
+    baseline_uncertainties: set[str] = set(stored.get('baseline_uncertainties', [])) if stored else set()
     generator_response_id: str | None = None
     if stored:
         report.source_inventory = list(stored.get('source_inventory', []))
@@ -157,6 +166,9 @@ def run_job(
             'phase': phase,
             'source_inventory': report.source_inventory,
             'source_uncertainties': source_uncertainties,
+            'baseline_requirements': (sorted(baseline_requirement_findings)
+                                      if baseline_requirement_findings is not None else None),
+            'baseline_uncertainties': sorted(baseline_uncertainties),
             'review_history': report.review_history,
             'generator_response_id': generator_response_id,  # reference only, never trusted for fresh container
             'report': report.as_dict(),
@@ -167,6 +179,12 @@ def run_job(
     checkpoint('resuming' if resume else 'started')
 
     def finish(state: ArtifactState) -> RunReport:
+        if job.source_path is not None and state.main_tex is not None:
+            # Diff is durable diagnostic evidence, not permission to alter content.
+            (job.result_dir / 'changes.diff').write_text(
+                improvement_diff(job.source_path.read_text(encoding='utf-8'),
+                                 state.main_tex.read_text(encoding='utf-8')) + '\n',
+                encoding='utf-8')
         outcome = _finish(report, state, report_path)
         checkpoint('finished-' + report.status)
         if resume and report.status == 'success':
@@ -203,6 +221,8 @@ def run_job(
             if rule_instructions:
                 system_prompt += ('\n\nAUSSCHLIESSLICH FÜR DIESEN JOB AUSGEWÄHLTE QUALITÄTSREGELN:\n'
                                   + rule_instructions)
+            if job.source_path is not None:
+                system_prompt += load_prompt(prompt_dir, "system-improve.md")
             registered_resources = {}
             for rule in rules:
                 for resource in rule.resources:
@@ -210,6 +230,8 @@ def run_job(
                         continue
                     registered_resources[resource.target] = resource
                     source = job.template_path.read_text(encoding='utf-8')
+                    if job.source_path is not None:
+                        source += job.source_path.read_text(encoding='utf-8')
                     already_defined = (f'\\def{resource.macro}' in source or
                                        any(f'\\def{resource.macro}' in file.read_text(
                                            encoding='utf-8',errors='replace')
@@ -266,7 +288,8 @@ def run_job(
                                        "\nUnsichere Originalstellen NICHT als sicher ausgeben:\n" +
                                        json.dumps(source_uncertainties, ensure_ascii=False))
                     initial_prompt += _uncertainty_generation_instruction()
-                progress('Dokumenterzeugung gestartet')
+                progress('Ausgangsfassung wird kompiliert' if job.source_path is not None
+                         else 'Dokumenterzeugung gestartet')
                 turn = _call_turn(
                     session=session, prompt=initial_prompt,
                     previous_response_id=None, phase='initial',
@@ -310,11 +333,31 @@ def run_job(
                 report.status = "failed"
                 return finish(state)
 
+            # In improve mode the compile-only baseline is recoverable even when it
+            # contains pre-existing requirements problems or scan uncertainties.
+            baseline_snapshot = job.result_dir / '.baseline'
+            original_tex = (job.source_path.read_text(encoding='utf-8')
+                            if job.source_path is not None else None)
+            if original_tex is not None:
+                assert state.main_tex is not None
+                if resume and not (baseline_snapshot / 'validation.json').is_file():
+                    raise ContextAgentError('improve resume requires its original compiled baseline snapshot')
+                if not resume and state.main_tex.read_text(encoding='utf-8') != original_tex:
+                    report.errors.append('Improve initial compile changed the source before baseline review')
+                    report.status = 'failed'
+                    return finish(state)
+                if not resume or not (baseline_snapshot / 'validation.json').is_file():
+                    _save_validated(job.result_dir, baseline_snapshot, report)
+                report.quality_journal.append({'event': 'baseline_compiled',
+                                               'source_sha256': _source_digest(state)})
             quality_repairs = 0
             content_repairs = 0
             visual_repairs = 0
             quality_seen: set[str] = set()
-            last_validated = job.result_dir / '.validated'
+            # An uncertain original is a protected comparison state, NOT an
+            # independently requirements-validated document.
+            last_validated = job.result_dir / ('.protected' if original_tex is not None
+                                               else '.validated')
             was_quality_repair = False
             pending_quality_batch: list[str] = []
             baseline_quality_counts: dict[str,int] = {}
@@ -327,6 +370,19 @@ def run_job(
                 report.review_uncertainties = []
                 report.content_findings = []
                 report.content_uncertainties = []
+                if original_tex is not None:
+                    assert state.main_tex is not None
+                    guard = improvement_guard(original_tex,
+                                              state.main_tex.read_text(encoding='utf-8'))
+                    if guard:
+                        report.quality_journal.append({'event': 'rollback',
+                            'reason': 'protected numeric content changed', 'differences': guard})
+                        _restore_validated(job.result_dir,
+                                           last_validated if last_validated.joinpath('validation.json').is_file()
+                                           else baseline_snapshot)
+                        state = _artifact_state(job.result_dir)
+                        report.status = 'needs_review'
+                        break
                 # Requirements are always reviewed BEFORE quality and after every
                 # refinement. Non-reproduction jobs use an independent audit too.
                 if not job.config.review.reproduction:
@@ -365,6 +421,9 @@ def run_job(
                                 all_uncertainties.append('Requirements not verifiable with available evidence')
                         report.content_findings = list(all_findings)
                         report.content_uncertainties = list(all_uncertainties)
+                        if original_tex is not None:
+                            report.content_uncertainties = list(dict.fromkeys(
+                                report.content_uncertainties + source_uncertainties))
                     report.requirements_checks.append({
                         'phase': 'requirements',
                         'source_sha256': _source_digest(state),
@@ -374,7 +433,26 @@ def run_job(
                         'uncertainties': list(report.content_uncertainties),
                     })
                     checkpoint('requirements-reviewed')
-                    if report.content_findings:
+                    if original_tex is not None:
+                        current_problems = {f.message for f in report.content_findings}
+                        current_ambiguities = set(report.content_uncertainties)
+                        if baseline_requirement_findings is None:
+                            baseline_requirement_findings = current_problems
+                            baseline_uncertainties = current_ambiguities
+                        elif was_quality_repair:
+                            new = current_problems - baseline_requirement_findings
+                            if new:
+                                _restore_validated(job.result_dir, last_validated)
+                                state = _artifact_state(job.result_dir)
+                                report.quality_journal.append({'event':'rollback',
+                                    'reason':'new requirements failure', 'findings':sorted(new)})
+                                report.status = 'needs_review'
+                                break
+                        report.quality_journal.append({'event':'improve_requirements_delta',
+                            'preexisting': sorted(baseline_requirement_findings),
+                            'current': sorted(current_problems),
+                            'baseline_uncertainties': sorted(baseline_uncertainties)})
+                    if report.content_findings and original_tex is None:
                         if was_quality_repair:
                             _restore_validated(job.result_dir, last_validated)
                             state = _artifact_state(job.result_dir)
@@ -391,7 +469,7 @@ def run_job(
                         state = repair(findings_as_prompt(report.content_findings),
                                        f'repair-requirements-{content_repairs}')
                         continue
-                    if report.content_uncertainties and was_quality_repair:
+                    if report.content_uncertainties and was_quality_repair and original_tex is None:
                         _restore_validated(job.result_dir, last_validated)
                         state = _artifact_state(job.result_dir)
                         report.quality_journal.append({'event':'rollback',
@@ -400,7 +478,7 @@ def run_job(
                         break
                     # Uncertainty is not a verified baseline for refinement, but
                     # must not suppress read-only checks of the selected rules.
-                    if report.content_uncertainties and not rules:
+                    if report.content_uncertainties and not rules and original_tex is None:
                         report.status = 'needs_review'
                         break
                 else:
@@ -525,7 +603,7 @@ def run_job(
                                               report.content_uncertainties)
                 # Only a verified requirements pass can become a rollback baseline.
                 # With uncertainty, selected rule checks remain read-only.
-                if not requirements_uncertain and not was_quality_repair:
+                if (not requirements_uncertain or original_tex is not None) and not was_quality_repair:
                     _save_validated(job.result_dir, last_validated, report)
                 # Use one checker pass on the SAME main.tex/include snapshot.
                 if rules:
@@ -602,7 +680,7 @@ def run_job(
                             was_quality_repair = False
                             pending_quality_batch = []
                             _save_validated(job.result_dir, last_validated, report)
-                        if requirements_uncertain:
+                        if requirements_uncertain and original_tex is None:
                             report.quality_journal.append({
                                 'event': 'read_only_quality_audit',
                                 'reason': 'original requirements not fully verified',
@@ -610,7 +688,7 @@ def run_job(
                             })
                             report.status = 'needs_review'
                             break
-                        if report.review_uncertainties:
+                        if report.review_uncertainties and original_tex is None:
                             report.status = 'needs_review'
                             break
                         if report.findings:
@@ -689,7 +767,9 @@ def run_job(
                     _save_validated(job.result_dir, last_validated, report)
                 # No selected-rule violations remain.
                 # Uncertainty is NOT proof of fidelity. Do not change Git files.
-                if report.review_uncertainties or report.content_uncertainties:
+                if (report.review_uncertainties or report.content_uncertainties or
+                    (original_tex is not None and baseline_uncertainties) or
+                    (original_tex is not None and report.content_findings)):
                     progress('Offene Quellunsicherheiten: manuelle Prüfung erforderlich')
                     report.status = "needs_review"
                     break
@@ -697,6 +777,8 @@ def run_job(
                 assert state.include_snapshot is not None
                 accepted_includes = read_include_snapshot(state.include_snapshot)
                 report.include_changes = include_transaction.apply(accepted_includes)
+                if original_tex is not None:
+                    _save_validated(job.result_dir, job.result_dir / '.validated', report)
                 report.status = "success"
                 break
 
@@ -751,14 +833,15 @@ def _save_validated(result_dir: Path, snapshot: Path, report: RunReport) -> None
         hashes[name] = hashlib.sha256(data).hexdigest()
         (snapshot / name).write_bytes(data)
     (snapshot / 'validation.json').write_text(json.dumps({
-         'files':hashes, 'requirements': report.requirements_checks[-1:]
+         'snapshot_kind': snapshot.name.removeprefix('.'),
+        'files':hashes, 'requirements': report.requirements_checks[-1:]
          if report.requirements_checks else report.review_history[-2:],
     }, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 def _restore_validated(result_dir: Path, snapshot: Path) -> None:
     if not (snapshot / 'validation.json').is_file():
-        raise ContextAgentError('no requirements-validated rollback snapshot')
+        raise ContextAgentError('no available protected rollback snapshot')
     data=json.loads((snapshot / 'validation.json').read_text(encoding='utf-8'))
     import hashlib
     for name, expected in data['files'].items():
@@ -1092,6 +1175,9 @@ def _finish(report: RunReport, state: ArtifactState, report_path: Path) -> RunRe
     ):
         if path is not None and path.is_file():
             report.artifacts[name] = str(path)
+    diff_path = report_path.parent / 'changes.diff'
+    if report.mode == 'improve' and diff_path.is_file():
+        report.artifacts['changes.diff'] = str(diff_path)
     if report.content_uncertainties or report.review_uncertainties:
         unique = list(dict.fromkeys(report.content_uncertainties + report.review_uncertainties))
         lines = ['# Unklare Stellen', '',

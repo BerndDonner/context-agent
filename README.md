@@ -1,6 +1,6 @@
-# context-agent 0.8 – ConTeXt-Dokumente mit expliziten Quality Rules
+# context-agent 0.9 – ConTeXt-Dokumente erstellen und verbessern
 
-`context-agent` erzeugt aus Aufgabe, verbindlichem Template und Eingabedokumenten eine kompilierte ConTeXt-LMTX-Fassung über die OpenAI Responses API mit Hosted Shell. Ziel ist eine möglichst hochwertige Ausgangsbasis für die manuelle Nachbearbeitung. Der Originalauftrag bleibt während aller Reparaturen der entscheidende Maßstab.
+`context-agent` erzeugt oder überarbeitet mit zwingend gewähltem `mode` aus Aufgabe, verbindlichem Template und Eingabedokumenten eine kompilierte ConTeXt-LMTX-Fassung über die OpenAI Responses API mit Hosted Shell. Ziel ist eine möglichst hochwertige Ausgangsbasis für die manuelle Nachbearbeitung. Der Originalauftrag bleibt während aller Reparaturen der entscheidende Maßstab.
 
 ## Anforderungen
 
@@ -30,6 +30,7 @@ mein-job/
 Minimalbeispiel (`runtime.context_archive` muss auf deinem System existieren):
 
 ```yaml
+mode: create
 model: gpt-6
 reasoning:
   effort: medium
@@ -58,6 +59,8 @@ quality:
   - number_with_unit
   - coordinate_reuse
 ```
+
+**`mode` und `quality` sind in jedem Job Pflicht.** `mode: create` beginnt bei Template und Quellen; `mode: improve` verwendet `source.path` als unveränderliche Ausgangsfassung. Ein fehlender Modus ist ein Konfigurationsfehler.
 
 **`quality` ist in jedem Job Pflicht**, auch `quality: []` ist zulässig. Es gibt keine Profile und keine automatische Auswahl anhand des Fachs oder Inhalts. Nur die von dir explizit angegebenen Regeln werden ausgeführt. `quality_directory` erlaubt ein zusätzliches Verzeichnis mit eigenen Regeln (nicht erforderlich für eingebaute Regeln).
 
@@ -105,3 +108,64 @@ Ein ConTeXt-Build allein ist **kein** Korrektheitsbeweis. Wer einen Validierungs
 **Wichtig:** Die LLM-Checker und Requirements-Audits sind probabilistisch und keine formalen Beweise. Die statischen Zahlen-/Einheiten- und Koordinatenscanner sind absichtlich konservative Kandidatenerkenner. Der dynamische Dollar-Linter dagegen untersucht die tatsächlich ausgeführte ConTeXt-Syntax. Ein echter Hosted-LMTX-/API-Abnahmetest ist weiterhin erforderlich; die Testsuite enthält Offline-Fakes.
 
 Weitere technische Details, Abhängigkeiten und Grenzen stehen in [DESIGN.md](DESIGN.md). Geplante Ergänzungen und offene Testfälle stehen in [TODO.md](TODO.md).
+
+## Überarbeitungsaufträge (`mode: improve`)
+
+Im Beispiel [`examples/ca-messtechnik-improve`](examples/ca-messtechnik-improve)
+wird ein vorhandenes Messtechnikblatt überarbeitet. Das Original-PDF ist
+Referenz, **keine** Aufforderung zur Rekonstruktion. Konfiguration:
+
+```yaml
+mode: improve
+source:
+  path: input/main.tex
+task: task.md
+template:
+  path: template/template.tex
+inputs: []
+references:
+  - input/Übungen Einführung Messtechnik.pdf
+review:
+  reproduction: false
+quality:
+  - semantic_numbers
+  - number_with_unit
+```
+
+`mode: improve` erfordert `source.path` (eine vorhandene `.tex` **außerhalb**
+von `result/`), `review.reproduction: false`; `mode: create` verbietet
+`source`. Ein Implizit-Modus ist nicht zulässig. Alle bisherigen Beispieljobs
+wurden auf `mode: create` migriert.
+
+Ablauf: Der Bundler legt eine **bytegenaue** Kopie von `source.path` als
+`result/main.tex` bei. Die erste Hosted-Runde ist nur ein Baseline-Compile:
+es darf keine Quelltextänderung stattfinden. Ein SHA-256-validierter
+`result/.baseline/`-Snapshot sichert auch dann den kompilierbaren Ursprungsstand,
+wenn bereits Inhaltshinweise oder Scanunsicherheiten existieren. Weitere Änderungen
+werden gegenüber der Originaldatei mit `result/changes.diff` protokolliert.
+Die Requirements Validation prüft weiter Originalauftrag, Referenzen, Quellcode,
+Ausgabeseiten und Diff. Neu eingeführte Requirements-Verstöße oder veränderte
+numerische Literal-Mengen führen zum Rollback auf den letzten überprüften Stand.
+Vorhandene Unsicherheiten bleiben erhalten und können `needs_review` auslösen,
+blockieren aber nicht mehr zwingend jede reine Qualitätsverbesserung.
+
+**Grenze:** Die konservative numerische Inventarprüfung erkennt Zahländerungen,
+aber **keine** vollständige TeX-Semantik. Insbesondere Vorzeichen-Neuordnung,
+Änderungen an Indizes, Bedeutungen von Einheiten und Formelstruktur benötigen
+zusätzlich den unabhängigen LLM-Requirements-Review. Der Guard sperrt momentan
+auch ausdrücklich gewünschte Zahlenwertänderungen: Ein allgemeiner
+Inhaltskorrektur-Modus mit nachweisbarer Änderungsfreigabe ist noch nicht vorhanden.
+
+### Lokaler ConTeXt-Test (kein API-Key)
+
+Die Bereitstellung enthält `scripts/local-lmtx.sh`. Ein bestehendes `.tex`
+mit funktionierenden relativen Include-Pfaden kann so geprüft werden:
+
+```bash
+bash scripts/local-lmtx.sh /pfad/context-lmtx-ready.tar.xz /pfad/job/result/main.tex
+```
+
+Der Runner entpackt die mitgelieferte Linux-x86-64-LMTX-Distribution
+in ein temporäres Verzeichnis, erstellt einen Schreibcache, kompiliert in
+Quelltext-Nähe und räumt anschließend seine Installation auf.
+Die API-gestützte `run`-Pipeline wird dadurch nicht ersetzt.

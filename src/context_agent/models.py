@@ -10,6 +10,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+class JobMode(StrEnum):
+    CREATE = "create"
+    IMPROVE = "improve"
+
+
 class InputRole(StrEnum):
     STATEMENT = "statement"
     RECREATE = "recreate"
@@ -22,6 +27,12 @@ class ContentPolicy(StrEnum):
     IMMUTABLE = "immutable"
     EDITABLE = "editable"
     GUIDANCE = "guidance"
+
+
+class SourceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
 
 
 class TemplateSpec(BaseModel):
@@ -85,6 +96,8 @@ class JobConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str
+    mode: JobMode
+    source: SourceSpec | None = None
     task: str = "task.md"
     reasoning: ReasoningSpec = Field(default_factory=ReasoningSpec)
     processing: ProcessingSpec = Field(default_factory=ProcessingSpec)
@@ -99,6 +112,12 @@ class JobConfig(BaseModel):
 
     @model_validator(mode="after")
     def reject_incompatible_batch(self) -> "JobConfig":
+        if self.mode == JobMode.IMPROVE and self.source is None:
+            raise ValueError("mode=improve requires source.path")
+        if self.mode == JobMode.CREATE and self.source is not None:
+            raise ValueError("source is only valid with mode=improve")
+        if self.mode == JobMode.IMPROVE and self.review.reproduction:
+            raise ValueError("mode=improve must use review.reproduction=false; PDF is a reference")
         if self.model == "gpt-6.1-sol" and self.reasoning.effort in ("none", "minimal"):
             raise ValueError(
                 "gpt-6.1-sol requires reasoning.effort low, medium, high, xhigh, or max"
@@ -143,6 +162,7 @@ class ResolvedJob:
     config: JobConfig
     task_path: Path
     template_path: Path
+    source_path: Path | None
     inputs: tuple[ResolvedInput, ...]
     references: tuple[Path, ...]
     include_dir: Path
@@ -226,6 +246,7 @@ class RunReport:
     status: str
     model: str
     started_at: datetime
+    mode: str = "create"
     reasoning_effort: str | None = None
     processing_mode: str = "auto"
     finished_at: datetime | None = None
@@ -291,6 +312,7 @@ class RunReport:
         return {
             "status": self.status,
             "model": self.model,
+            "mode": self.mode,
             "reasoning_effort": self.reasoning_effort,
             "processing_mode": self.processing_mode,
             "started_at": self.started_at.isoformat(),

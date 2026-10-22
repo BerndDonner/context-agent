@@ -1,4 +1,4 @@
-# context-agent 0.8 – Stand und verbleibende Prüfungen
+# context-agent 0.9 – Stand und verbleibende Prüfungen
 
 Stand: 14. Oktober 2026. Die früheren fünf Qualitätsregeln und die neue Ausführungsarchitektur sind auf Basis des Projekt-Uploads `context-agent20.zip` implementiert. **Die alte TODO-Liste mit falscher Empfehlung `\rm` wurde ersetzt.** Der aktuelle fachliche Standard verlangt vielmehr die High-Level-Befehle `\text` und `\mtext`.
 
@@ -25,3 +25,21 @@ Stand: 14. Oktober 2026. Die früheren fünf Qualitätsregeln und die neue Ausf�
 - [ ] Später gegebenenfalls Kosten-/Risiko-Adaption und feinere Fortschrittsplanung ergänzen – erst nach echten Laufdaten.
 
 Die händische Nachbearbeitung ist ausdrücklich Teil des Ziels; verbleibende semantische Unsicherheiten werden berichtet, nicht mit beliebig vielen LLM-Aufrufen versteckt.
+
+## 0.9 (22. Oktober 2026)
+
+- [x] Pflichtfeld `mode` und Migration der bestehenden Jobs auf `create`.
+- [x] `improve` mit expliziter, unveränderlicher Ausgangsquelle, separatem
+      Initialprompt, Baseline-Compile und geschütztem Snapshot.
+- [x] Differenzvergleich und konservativer Zahlen-Guard in Regression Gate.
+- [x] Verbesserungsmodus mit bestehenden Requirements-Unsicherheiten und Rollback.
+- [x] Lokal lauffähiges ConTeXt LMTX aus mitgeliefertem Archiv, inkl.
+      echter Kompilierung des Messtechnik-Blattes.
+- [ ] Hosted-End-to-End-Test mit echter Responses API und Remote-LMTX-Runner
+      (hier kein API-Zugang konfiguriert). Alle Offline-Fakes laufen lokal.
+- [ ] Freigabemechanismus für beabsichtigte fachliche Zahlenänderungen bei
+      späteren nicht nur typografischen `improve`-Aufträgen.
+- [ ] Überprüfung des textbasierten Diffs bei sehr großen Quelltexten sowie
+      Erfassung aller Makro- und Formelsemantiken im Review.
+- [ ] Eventuelle vollständige TeX-Quellscanner-Erweiterung – gegenwärtig nur
+      konservativ um Lua-Codeblöcke verbessert.

@@ -220,7 +220,7 @@ def source_without_unset_text(text: str, *, preserve_mp: bool = False) -> str:
     start = re.search(r'\\starttext\b', text)
     if start:
         text = ' ' * start.end() + text[start.end():]
-    literal = r'typing|TEX|LUA|buffer' + ('' if preserve_mp else '|MPcode')
+    literal = r'typing|TEX|LUA|luacode|luaparameters|buffer' + ('' if preserve_mp else '|MPcode|MPpage')
     for match in list(re.finditer(r'\\start(?:' + literal + r')\b.*?\\stop(?:' + literal + r')\b', text, re.S)):
         text = text[:match.start()] + re.sub(r'[^\n]', ' ', match.group()) + text[match.end():]
     text = re.sub(r'\\type\{[^{}]*\}|\\type\|[^|]*\|', lambda m: ' ' * len(m.group()), text)

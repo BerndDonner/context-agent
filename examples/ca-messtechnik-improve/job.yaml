@@ -1,0 +1,41 @@
+# Verbesserungsauftrag: vorhandener ConTeXt-Quelltext ist die Autorität.
+mode: improve
+model: gpt-6.1-sol
+reasoning:
+  effort: high
+processing:
+  mode: standard
+
+task: task.md
+source:
+  path: input/main.tex
+template:
+  path: template/template.tex
+
+# Das Scan-PDF ist REFERENZ, keine Wiederaufbau-Anweisung.
+inputs: []
+references:
+  - input/Übungen Einführung Messtechnik.pdf
+
+runtime:
+  context_archive: ~/RClone/bleau1975/ChatGPT-Sandbox/context/context-lmtx-ready.tar.xz
+  memory_limit: 4g
+  keep_remote: false
+
+limits:
+  max_agent_turns: 80
+  max_quality_repairs: 4
+  timeout_seconds: 3600
+  max_output_tokens: 24000
+
+review:
+  reproduction: false
+  max_content_repairs: 0
+  max_visual_repairs: 0
+  max_pages: 60
+  pages_per_batch: 2
+
+quality:
+  - dollar_math
+  - semantic_numbers
+  - number_with_unit

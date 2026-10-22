@@ -17,6 +17,9 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
                      rules: tuple[QualityRule, ...] = ()) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
+        "mode": job.config.mode.value,
+        "source": (f"job/{job.source_path.relative_to(job.root).as_posix()}"
+                   if job.source_path is not None else None),
         "task": f"job/{job.config.task}",
         "template": f"job/{job.config.template.path}",
         "inputs": [
@@ -77,6 +80,10 @@ def build_job_bundle(job: ResolvedJob, destination: Path, runtime_dir: Path,
                 info.mode = 0o644
                 info.size = len(content)
                 archive.addfile(info, io.BytesIO(content))
+
+        if resume_result is None and job.source_path is not None:
+            # No source rewriting or regeneration. Result is an exact copy initially.
+            archive.add(job.source_path, arcname='job/result/main.tex', recursive=False)
 
         if resume_result is not None:
             for relative, data in sorted(overrides.items()):

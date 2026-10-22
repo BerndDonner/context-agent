@@ -18,6 +18,10 @@ def preflight_prompt(job: ResolvedJob, rules: tuple[QualityRule, ...]) -> str:
     template = job.template_path.read_text(encoding='utf-8')
     task = job.task_path.read_text(encoding='utf-8')
     extracts = []
+    if job.source_path is not None:
+        extracts.append("VERBINDLICHE AUSGANGSFASSUNG " +
+                        job.source_path.relative_to(job.root).as_posix() + ":\n" +
+                        job.source_path.read_text(encoding="utf-8")[:32000])
     for item in job.inputs:
         if item.path.suffix.lower() in ('.txt', '.md', '.tex'):
             extracts.append(f'{item.relative_path} ({item.role}/{item.policy}):\n'
@@ -46,7 +50,7 @@ def preflight_prompt(job: ResolvedJob, rules: tuple[QualityRule, ...]) -> str:
             '{"status":"passed|blocked","conflicts":[{"rules":["id"],"reason":"...",'
             '"relevance":"blocking|minor"}],"uncertainties":["..."],'
             '"plan":[["id1","id2"],["id3"]]}.\n'
-            f'ORIGINALAUFTRAG:\n{task}\n\nTEMPLATE:\n{template}\n\n'
+            f'MODUS: {job.config.mode.value}\nORIGINALAUFTRAG:\n{task}\n\nTEMPLATE:\n{template}\n\n'
             f'EINGABEN:\n{"\\n\\n".join(extracts)}\n\nAUSGEWÄHLTE QUALITÄTSREGELN:\n' +
             '\n\n'.join(rule.llm_description() for rule in rules))
 

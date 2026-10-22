@@ -1,0 +1,109 @@
+\mainlanguage[de]
+
+\setuplayout
+  [backspace=2.0cm,
+   height=middle,
+   width=middle,
+   leftmargin=1.8cm,
+   footerdistance=0.0cm,
+   rightmargindistance=0.2cm,
+   rightmargin=1.8cm,
+   bottom=0.5cm,
+   leftmargindistance=0.2cm,
+   header=2.1cm,
+   headerdistance=0.5cm,
+   footer=0.5cm,
+   top=0cm,
+   topspace=0.5cm,
+   bottomspace=0.0cm]
+
+\setupcolors[pagecolormodel=auto]
+
+\setuphead
+  [chapter]
+  [number=no,
+   style=,
+   textstyle=\tfb\ss,
+   before={\blank[small]},
+   after={\blank[small]}]
+
+\setuphead
+  [section]
+  [number=no,
+   style=,
+   textstyle=\tfa\ss,
+   before={\blank[small]},
+   after={\blank[small]}]
+
+\definemeasure[headerimageheight][\dimexpr(\headerheight-2ex)]
+
+\definelayer[sabel]
+
+\startsetups[sabel]
+\setlayerframed[sabel][x=0mm,y=0mm][frame=off,offset=none]
+{%
+   \setupTABLE[start][style=\tfx]
+   \setupTABLE[r][each][height=0.85\baselineskip]
+   \setupTABLE[column][1][align=right, width=.4\textwidth, loffset=-2pt, toffset=-5pt]%
+   \setupTABLE[column][2][align={center,lohi}, width=.2\textwidth]%
+   \setupTABLE[column][3][align=left, width=.4\textwidth, roffset=-2pt, toffset=-5pt]%
+   \bTABLE[frame=off]
+   \bTR \bTD Sabel-GBS           \eTD \bTD [nr=5] \dontleavehmode\externalfigure[../Logo/sabel.png][maxheight=\measure{headerimageheight}, frame=off]\dontleavehmode \eTD \bTD Schuljahr 2026/27                 \eTD \eTR
+   \bTR \bTD Messtechnik         \eTD                                                                                                                                     \bTD Klasse M1A                        \eTD \eTR
+   \bTR \bTD B.~Donner           \eTD                                                                                                                                     \bTD                                   \eTD \eTR
+   \bTR \bTD \strut              \eTD                                                                                                                                     \bTD Name: \thinrules[n=1,width=2.7cm] \eTD \eTR
+   \bTR \bTD Übungsblatt     \eTD                                                                                                                                     \bTD Einführung Messtechnik      \eTD \eTR
+   \eTABLE}
+\stopsetups
+
+\setupbackgrounds[header][text][bottomframe=on,setups=sabel,background=sabel]
+\setuppagenumbering[location={footer,middle},style=\bfc]
+
+\setupfootertexts
+  [Arbeitszeit: ca. 90 min][Messtechnik]
+  [Messtechnik][Arbeitszeit: ca. 90 min]
+
+\setdigitmode 3
+\unexpanded\def\dn#1{\ifmmode\text{\digits{#1}}\else\digits{#1}\fi}
+
+\setupmathematics[ampersand=text]
+\setupformulas[align=middle]
+
+\setupitemgroup[itemize][1][n,repeat][width=1.6em,distance=.4em]
+\setupitemgroup[itemize][2][a,repeat][width=1.8em,distance=.4em]
+
+\definemargindata
+  [myinleft]
+  [inleft]
+  [align=flushleft]
+
+\defineenumeration[exercise]
+  [text=,
+   alternative=myinleft,
+   width=2em,
+   distance=0.5em,
+   style=\rm,
+   headstyle=\rm,
+   way=bytext,
+   prefix=no,
+   headcommand=\groupedcommand{}{}]
+
+\defineframedtext
+  [hinweis]
+  [width=broad,
+   frame=on,
+   rulethickness=.6pt,
+   corner=round,
+   offset=.7em,
+   background=color,
+   backgroundcolor=lightgray,
+   before={\blank[small]},
+   after={\blank[medium]}]
+
+\starttext
+
+% Vorlage: Nur Layout und Kopf aus dem SI-Arbeitsblatt.
+% Der Agent ersetzt diesen Bereich vollständig durch die originalgetreue
+% Reproduktion der eingescannten Aufgaben samt vorhandener Lösungen.
+
+\stoptext

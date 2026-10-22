@@ -10,7 +10,8 @@ def load_prompt(prompt_dir: Path, name: str) -> str:
 
 
 def render_initial_prompt(job: ResolvedJob, prompt_dir: Path) -> str:
-    template = load_prompt(prompt_dir, "initial-job.md")
+    template = load_prompt(prompt_dir,
+        "initial-improve.md" if job.source_path is not None else "initial-job.md")
     attachments = []
     for item in job.inputs:
         attachments.append(
@@ -21,6 +22,8 @@ def render_initial_prompt(job: ResolvedJob, prompt_dir: Path) -> str:
 
     return template.format(
         task_path=job.config.task,
+        source_path=(job.source_path.relative_to(job.root).as_posix()
+                     if job.source_path else ""),
         template_path=job.config.template.path,
         attachments="\n".join(attachments) if attachments else "- keine",
     )

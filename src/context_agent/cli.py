@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
             rules = load_rules(job)
             print(f"Job gültig: {job.root}")
             print('Explizite Qualitätsregeln: ' + (', '.join(rule.id for rule in rules) or '(keine)'))
+            print(f"Modus: {job.config.mode.value}")
+            if job.source_path is not None:
+                print(f"Ausgangsfassung: {job.source_path}")
             print(f"Template: {job.template_path}")
             print(f"Eingaben: {len(job.inputs)}, Referenzen: {len(job.references)}")
             return 0

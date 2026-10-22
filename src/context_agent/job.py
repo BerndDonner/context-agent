@@ -7,7 +7,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from context_agent.errors import ConfigurationError
-from context_agent.models import JobConfig, ResolvedInput, ResolvedJob
+from context_agent.models import JobConfig, JobMode, ResolvedInput, ResolvedJob
 from context_agent.template import split_template
 
 
@@ -54,6 +54,17 @@ def load_job(job_directory: Path) -> ResolvedJob:
     template_path = _resolve_inside(root, config.template.path, label="template")
     _require_file(task_path, "task")
     _require_file(template_path, "template")
+    source_path = None
+    if config.mode == JobMode.IMPROVE:
+        assert config.source is not None
+        source_path = _resolve_inside(root, config.source.path, label="source")
+        _require_file(source_path, "source")
+        if source_path.suffix.lower() != ".tex":
+            raise ConfigurationError("improve source must be a .tex file")
+        if source_path.is_relative_to(root / "result"):
+            raise ConfigurationError("improve source must not be inside result/")
+        if source_path == template_path:
+            raise ConfigurationError("improve source must be independent of template")
 
     try:
         split_template(template_path.read_text(encoding="utf-8"))
@@ -103,6 +114,7 @@ def load_job(job_directory: Path) -> ResolvedJob:
         config=config,
         task_path=task_path,
         template_path=template_path,
+        source_path=source_path,
         inputs=tuple(resolved_inputs),
         references=tuple(references),
         include_dir=include_dir,

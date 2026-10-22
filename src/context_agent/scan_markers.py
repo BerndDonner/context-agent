@@ -32,3 +32,22 @@ def visible_scan_markers(main_tex: Path) -> list[QualityFinding]:
                              'Stelle `% [Scan unklar: ...]` als ConTeXt-Kommentar setzen.'),
             ))
     return findings
+
+
+def inherited_scan_uncertainties(main_tex: Path) -> list[str]:
+    """Preserve existing, explicitly labelled source ambiguities in improve jobs.
+
+    These findings are inherited review items, not new quality violations and
+    not permission to change already visible placeholders without a task.
+    """
+    result: list[str] = []
+    for line_number, line in enumerate(main_tex.read_text(encoding='utf-8').splitlines(), 1):
+        # Skip the macro declaration itself and plain explanatory comments.
+        if line.lstrip().startswith('%') or r'\define' in line:
+            continue
+        matches = re.findall(r'\\ScanUnklar\{([^{}]+)\}|\[(Index unklar[^]]*|Scan unklar:[^]]*)\]', line)
+        for group in matches:
+            value = next((item for item in group if item), '')
+            if value:
+                result.append(f'Ausgangsdatei Zeile {line_number}: {value}')
+    return result

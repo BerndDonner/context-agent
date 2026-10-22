@@ -1,6 +1,6 @@
-# context-agent – Architektur 0.8 (Quality Rules)
+# context-agent – Architektur 0.9 (Create / Improve + Quality Rules)
 
-Stand: 14. Oktober 2026. Diese Datei beschreibt das **aktuelle** System. Die vorangegangene Designfassung ist als historische Referenz unter `docs/history/DESIGN_v0.7.md` archiviert und **nicht** mehr als Implementierungsvertrag gültig.
+Stand: 22. Oktober 2026. Diese Datei beschreibt das **aktuelle** System. Die vorangegangene Designfassung ist als historische Referenz unter `docs/history/DESIGN_v0.7.md` archiviert und **nicht** mehr als Implementierungsvertrag gültig.
 
 ## Ziel
 
@@ -72,3 +72,34 @@ Alle Prüfschritte laufen mit konfigurierten Rundenbudgets. Die dynamischen ConT
 ### Dokumentationskonventionen
 
 Die Datei `README.md` ist die Benutzerdokumentation; `TODO.md` nennt bewusst noch verbleibende Verifikationsaufgaben. Die historical Design-Datei dokumentiert ältere, inzwischen entfernte No-go-Strukturen und darf nicht als aktuelle API-Beschreibung interpretiert werden.
+
+## Erweiterung 0.9: verbindliche Jobmodi und Protected Baseline
+
+Jeder Job hat verpflichtend `mode: create|improve`. Keine Defaultauswahl.
+Historische Jobs und Tests sind auf `mode: create` migriert. Der ursprüngliche
+Create-/Reproduktionspfad wird nicht durch Improve ersetzt.
+
+`mode: improve` benötigt `source.path` (geschützte `.tex` im Job), ein Template
+und den Originalauftrag. `references` kann ein gescanntes PDF enthalten,
+welches ausschließlich sekundäre Kontrollquelle ist. `review.reproduction`
+ist dafür deaktiviert; es bleibt eine unabhängige Requirements Validation.
+
+Der Bundler setzt `result/main.tex` anfangs bytegenau aus `source.path`.
+Der erste LLM/Hosted-Schritt darf ausschließlich kompilieren und Includes
+sichern. `.baseline/` ist ein gesonderter **kompilierbarer**, SHA-256-validierter
+Snapshot, noch kein semantisch validiertes Ergebnis. `.protected/` sichert den letzten qualitätsgeprüften Zwischenstand, auch
+bei verbleibender Unsicherheit. `.validated/` bleibt dem semantisch
+überprüften Abschlussergebnis vorbehalten.
+Dies ist bewusst keine Missdeutung von `resume`.
+
+Die Requirementsprüfung bekommt Quelltext und Unified-Diff von Original zu
+Ergebnis. Fehler/Unsicherheiten der Ausgangsfassung werden getrennt von neuen
+Fehlern dokumentiert. Neue Befunde oder nachweislich geänderte Zahl-Literal-
+Inventare werden zurückgesetzt. Die Ausgangsdatei und Referenzen werden
+per Fingerprint gegen lokale Veränderungen geschützt. Im `changes.diff`
+bleibt die Änderung nachprüfbar. Offene Altfälle bleiben `needs_review`.
+
+**Grenzen:** Der numerische Inventarvergleich ist konservativ und verhindert
+auch gewollte Wertänderungen. Eine umfassende semantische Erhaltung ist nicht
+formal beweisbar; Format-, Index-, Vorzeichen- und Einheitentreue erfordern
+weiterhin unabhängige Reviewer. Hosted-End-to-End braucht API-Zugang.

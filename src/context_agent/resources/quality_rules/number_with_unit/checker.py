@@ -8,6 +8,9 @@ _PATTERNS = [
     re.compile(r'\d+(?:\{,\}\d+|\.\d+)?\s*\^\s*\{?\\circ\}?'),
     re.compile(r'\d+(?:\{,\}\d+|\.\d+)?\s*\\%'),
     re.compile(r'\d+\s*(?:V|mA|kV|Hz|kHz|kg|km/h)\b'),
+    # Bare SI spellings commonly found in transcribed measurement sheets.
+    re.compile(r'(?<![\\\w])\d+(?:\{,\}\d+|[.,]\d+)?\s*(?:μV|µV|mV|kΩ|MΩ|Ω|mΩ|µA|μA|ms|us|\\%)(?![\w])'),
+    re.compile(r'(?<![\\\w])\d+[.,]\d+\s*(?:V|A|W|Hz|s|K)\b'),
 ]
 
 def check(context: QualityContext) -> list[QualityFinding]:

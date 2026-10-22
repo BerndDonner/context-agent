@@ -1,3 +1,4 @@
+mode: create
 model: gpt-5.6-luna
 
 task: task.md
