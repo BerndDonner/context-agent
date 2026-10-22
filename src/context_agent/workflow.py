@@ -36,7 +36,8 @@ from context_agent.quality_rules import (QualityContext, findings_as_prompt, loa
 from context_agent.quality_preflight import Preflight, llm_preflight
 from context_agent.requirements import (prompt as requirements_prompt,
                                         parse_result as parse_requirements,
-                                        verified_evidence, verify_regressions)
+                                        verified_evidence, verify_regressions,
+                                        RequirementsReviewSchemaError)
 from context_agent.openai_backend import AgentSession, OpenAIHostedSession
 from context_agent.progress import Progress
 from context_agent.scan_markers import visible_scan_markers, inherited_scan_uncertainties
@@ -487,16 +488,24 @@ def run_job(
                             include_snapshot=state.include_snapshot,
                             initial_fingerprints=input_fingerprint,
                         )
+                        invalid_review = False
                         for offset in range(0, len(pages), job.config.review.pages_per_batch):
-                            _require_review_turn(report, job)
                             batch = pages[offset:offset + job.config.review.pages_per_batch]
                             prompt = requirements_prompt(job, state.main_tex, pages=len(pages),
                                                          evidence=evidence)
                             prompt += f'\nOutput pages {offset+1} through {offset+len(batch)} of {len(pages)}.'
-                            checked = _call_review(session=session, prompt=prompt,
-                                previous_response_id=None, pages=batch, report=report,
-                                transcript_path=transcript_path, phase='review-requirements')
-                            result = parse_requirements(checked.output_text)
+                            result = _review_requirements_with_retry(
+                                session=session, prompt=prompt, pages=batch,
+                                report=report, job=job, transcript_path=transcript_path,
+                                start_page=offset+1, end_page=offset+len(batch),
+                                events_path=job.result_dir / 'execution-events.jsonl')
+                            if result is None:
+                                invalid_review = True
+                                all_uncertainties.append(
+                                    f'Independent requirements review unusable for pages '
+                                    f'{offset+1}-{offset+len(batch)}; no regression or approval '
+                                    'can be inferred from the malformed response.')
+                                break
                             if original_tex is not None:
                                 regressions, unverified = verify_regressions(
                                     result, original_tex, state.main_tex.read_text(encoding='utf-8'))
@@ -520,6 +529,31 @@ def run_job(
                         if original_tex is not None:
                             report.content_uncertainties = list(dict.fromkeys(
                                 report.content_uncertainties + source_uncertainties))
+                    if invalid_review:
+                        # Retain the unvalidated candidate for inspection, but
+                        # never promote it to an accepted/validated snapshot.
+                        report.content_findings = []
+                        report.content_uncertainties = list(dict.fromkeys(
+                            all_uncertainties + source_uncertainties))
+                        report.requirements_checks.append({
+                            'phase': 'requirements', 'source_sha256': _source_digest(state),
+                            'status': 'uncertain', 'findings': [],
+                            'uncertainties': list(report.content_uncertainties),
+                        })
+                        log_rollback('independent requirements review returned no usable '
+                                     'schema-valid result after retry',
+                                     reason_code='requirements_review_invalid_schema',
+                                     exception_type='RequirementsReviewSchemaError')
+                        safe_snapshot = (last_validated if last_validated.joinpath(
+                            'validation.json').is_file() else
+                            baseline_snapshot if original_tex is not None and
+                            baseline_snapshot.joinpath('validation.json').is_file() else None)
+                        if safe_snapshot is not None:
+                            _restore_validated(job.result_dir, safe_snapshot)
+                            state = _artifact_state(job.result_dir)
+                        report.status = 'needs_review'
+                        checkpoint('requirements-review-incomplete')
+                        break
                     report.requirements_checks.append({
                         'phase': 'requirements',
                         'source_sha256': _source_digest(state),
@@ -1146,6 +1180,70 @@ def _call_review(
     append_transcript(transcript_path, turn_number=report.agent_turns,
                       phase=phase, turn=turn)
     return turn
+
+
+
+def _review_requirements_with_retry(
+    *, session: AgentSession, prompt: str, pages: tuple[Path, ...],
+    report: RunReport, job: ResolvedJob, transcript_path: Path,
+    start_page: int, end_page: int, events_path: Path,
+):
+    """At most one independent schema repair, with the same page evidence.
+
+    Invalid LLM output is not a proven requirements failure. Each attempt is
+    recorded, consumes the normal turn budget, and remains in the transcript.
+    """
+    for attempt in (1, 2):
+        if not _may_turn(report, job):
+            record_event(events_path, 'requirements_review_budget_exhausted',
+                         phase='review-requirements', batch_start_page=start_page,
+                         batch_end_page=end_page, review_attempt=attempt)
+            return None
+        request = prompt
+        if attempt > 1:
+            request += ("\nSCHEMA-KORREKTURVERSUCH: Antworte ausschließlich mit gültigem JSON "
+                "nach dem vorgegebenen Schema. findings enthält ausschließlich "
+                "konkrete Mängel als Objekte mit message, file und line; "
+                "positive Prüfaussagen gehören nicht in findings. "
+                "status=passed nur ohne findings, uncertainties und regressions. "
+                "Bei offenem Prüfbedarf nutze status=uncertain. "
+                "Behalte dieselbe unabhängige Beweisgrundlage bei.")
+        checked = _call_review(
+            session=session, prompt=request, previous_response_id=None,
+            pages=pages, report=report, transcript_path=transcript_path,
+            phase='review-requirements')
+        try:
+            if checked.status != 'completed':
+                raise RequirementsReviewSchemaError('response_not_completed')
+            result = parse_requirements(checked.output_text)
+        except RequirementsReviewSchemaError as exc:
+            record_event(events_path, 'requirements_review_schema_invalid',
+                         phase='review-requirements', batch_start_page=start_page,
+                         batch_end_page=end_page, review_attempt=attempt,
+                         review_max_attempts=2, review_error_code=exc.code,
+                         response_id=checked.response_id,
+                         response_status=checked.status)
+            report.review_history.append({
+                'phase': 'requirements-schema', 'status': 'invalid',
+                'batch': [start_page, end_page], 'attempt': attempt,
+                'reason_code': exc.code, 'response_id': checked.response_id,
+            })
+            if attempt == 1:
+                record_event(events_path, 'requirements_review_retry',
+                             phase='review-requirements', batch_start_page=start_page,
+                             batch_end_page=end_page, review_attempt=2)
+            continue
+        record_event(events_path, 'requirements_review_batch_valid',
+                     phase='review-requirements', batch_start_page=start_page,
+                     batch_end_page=end_page, review_attempt=attempt,
+                     review_batch_status=result.status,
+                     response_id=checked.response_id)
+        return result
+    record_event(events_path, 'requirements_review_unusable',
+                 phase='review-requirements', batch_start_page=start_page,
+                 batch_end_page=end_page, review_max_attempts=2,
+                 review_error_code='schema_retries_exhausted')
+    return None
 
 
 def _call_review_text(

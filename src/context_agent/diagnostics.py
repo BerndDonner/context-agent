@@ -26,7 +26,8 @@ _SAFE_KEYS = frozenset({
     'preflight_status', 'output_bytes', 'output_sha256',
     'plan_unknown_count', 'plan_duplicate_count', 'plan_missing_count',
     'call_id_sha256', 'command_count', 'numeric_difference_count', 'finding_count',
-    'worsened_rule_count', 'snapshot_sha256', 'guard_type', 'runtime_resolution_count',
+    'worsened_rule_count', 'snapshot_sha256', 'guard_type', 'runtime_resolution_count', 'batch_start_page', 'batch_end_page',
+    'review_attempt', 'review_max_attempts', 'review_error_code', 'review_batch_status',
 })
 
 

@@ -266,6 +266,19 @@ auch ein datensparsames `execution-events.jsonl`-Ereignis. Die alten Prüfungen
 und `mode: create` werden weiterhin unterstützt.
 
 
+### Requirements-Review und Wiederaufnahme (0.9.7)
+
+Der unabhängige Requirements-Reviewer verwendet einen strikten JSON-Response-Vertrag.
+Eine nicht parsebare oder widersprüchliche Antwort ist **kein nachgewiesener
+Dokumentfehler**. Der Agent wiederholt denselben Review-Batch maximal einmal,
+solange das Job-Turn-Budget dies zulässt. Beide Aufrufe erscheinen im Transkript;
+`execution-events.jsonl` protokolliert Batch, Versuch, Response-ID und einen
+strukturierten Fehlercode ohne Dokumentinhalt. Führt auch die Wiederholung zu
+keinem verwertbaren Review, endet der Job mit `needs_review` und sichert den
+Kandidaten in `result/rejected/` statt ihn zu akzeptieren. Ein vorhandener
+Rollback-Stand wird wiederhergestellt. Der Nutzer muss den verworfenen Kandidaten
+explizit prüfen; das Archiv ist keine Qualitätsfreigabe.
+
 ### Improve-Regression, Belegfreigaben und Diagnose (0.9.6)
 
 Der Zahlen-/Einheitenschutz vergleicht die strukturiert erkannten Größen

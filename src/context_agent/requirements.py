@@ -178,6 +178,51 @@ def prompt(job: ResolvedJob, main_tex: Path, *, pages: int,
             f'VERIFIZIERTE TECHNISCHE EVIDENZ:\n{facts}')
 
 
+class RequirementsReviewSchemaError(ContextAgentError):
+    """A reviewer response is malformed; it is not a document regression.
+
+    ``code`` is safe to include in structured diagnostics; the raw model
+    output remains exclusively in the existing transcript.
+    """
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(f'requirements review invalid response schema: {code}')
+
+
+# Responses API Structured Outputs: all properties are required, including
+# nullable location fields; all objects forbid undeclared fields. Semantic
+# cross-field checks (e.g. passed + uncertainty) remain in parse_result.
+REQUIREMENTS_RESPONSE_FORMAT: dict[str, object] = {
+    'type': 'json_schema',
+    'name': 'context_agent_requirements_review',
+    'strict': True,
+    'schema': {
+        'type': 'object',
+        'properties': {
+            'status': {'type': 'string', 'enum': ['passed', 'failed', 'uncertain']},
+            'findings': {'type': 'array', 'items': {
+                'type': 'object', 'properties': {
+                    'message': {'type': 'string'},
+                    'file': {'type': ['string', 'null']},
+                    'line': {'type': ['integer', 'null']},
+                }, 'required': ['message', 'file', 'line'],
+                'additionalProperties': False}},
+            'uncertainties': {'type': 'array', 'items': {'type': 'string'}},
+            'regressions': {'type': 'array', 'items': {
+                'type': 'object', 'properties': {
+                    'message': {'type': 'string'},
+                    'original_excerpt': {'type': 'string'},
+                    'updated_excerpt': {'type': 'string'},
+                }, 'required': ['message', 'original_excerpt', 'updated_excerpt'],
+                'additionalProperties': False}},
+        },
+        'required': ['status', 'findings', 'uncertainties', 'regressions'],
+        'additionalProperties': False,
+    },
+}
+
+
 def parse_result(output: str) -> RequirementsResult:
     value = output.strip()
     if value.startswith('```'):
@@ -185,36 +230,37 @@ def parse_result(output: str) -> RequirementsResult:
     try:
         data = json.loads(value)
     except ValueError as exc:
-        raise ContextAgentError('requirements review returned invalid JSON') from exc
+        raise RequirementsReviewSchemaError('invalid_json') from exc
     if not isinstance(data, dict) or data.get('status') not in ('passed', 'failed', 'uncertain'):
-        raise ContextAgentError('requirements review returned invalid status')
+        raise RequirementsReviewSchemaError('invalid_status')
     if not isinstance(data.get('findings'), list) or not isinstance(data.get('uncertainties'), list):
-        raise ContextAgentError('requirements review returned invalid lists')
+        raise RequirementsReviewSchemaError('invalid_lists')
+    if any(not isinstance(item, str) for item in data['uncertainties']):
+        raise RequirementsReviewSchemaError('invalid_uncertainty')
     findings = []
     for item in data['findings']:
-        if not isinstance(item, dict) or not isinstance(item.get('message'), str):
-            raise ContextAgentError('requirements review returned invalid finding')
+        if (not isinstance(item, dict) or not isinstance(item.get('message'), str)
+                or not item['message'].strip()):
+            raise RequirementsReviewSchemaError('invalid_finding')
         findings.append(QualityFinding('original-requirements', item['message'],
                             str(item.get('file')) if item.get('file') else None,
                             item.get('line') if isinstance(item.get('line'), int) else None))
-    uncertainties=tuple(str(x) for x in data['uncertainties'] if isinstance(x,str))
-    if data['status'] == 'passed' and (findings or uncertainties):
-        raise ContextAgentError('requirements review cannot pass with findings or uncertainties')
-    if data['status'] == 'failed' and not findings and not data.get('regressions'):
-        raise ContextAgentError('failed requirements review must provide an evidence-backed finding')
+    uncertainties = tuple(data['uncertainties'])
     regressions = data.get('regressions', [])
     if not isinstance(regressions, list):
-        raise ContextAgentError('requirements review returned invalid regressions')
+        raise RequirementsReviewSchemaError('invalid_regressions')
     validated = []
     for entry in regressions:
         if not isinstance(entry, dict) or not all(isinstance(entry.get(key), str) and
                 entry[key].strip() for key in ('message','original_excerpt','updated_excerpt')):
-            raise ContextAgentError('requirements review returned invalid regression evidence')
+            raise RequirementsReviewSchemaError('invalid_regression_evidence')
         validated.append({key: entry[key] for key in
                           ('message','original_excerpt','updated_excerpt')})
-    if data['status'] == 'passed' and validated:
-        raise ContextAgentError('requirements review cannot pass with regressions')
-    return RequirementsResult(data['status'],tuple(findings),uncertainties,tuple(validated))
+    if data['status'] == 'passed' and (findings or uncertainties or validated):
+        raise RequirementsReviewSchemaError('passed_with_open_issues')
+    if data['status'] == 'failed' and not findings and not validated:
+        raise RequirementsReviewSchemaError('failed_without_evidence')
+    return RequirementsResult(data['status'], tuple(findings), uncertainties, tuple(validated))
 
 
 def verify_regressions(result: RequirementsResult, original: str,

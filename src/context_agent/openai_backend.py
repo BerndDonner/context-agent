@@ -17,6 +17,7 @@ from typing import Any, ClassVar, Protocol, cast
 from context_agent.diagnostics import exception_metadata, record_event, shell_output_events
 from context_agent.errors import ArtifactError, RemoteAgentError
 from context_agent.models import AgentTurn, ResolvedJob
+from context_agent.requirements import REQUIREMENTS_RESPONSE_FORMAT
 
 
 _CONTEXT_BUNDLE_HEADER = b"CONTEXT_AGENT_ARCHIVE_V1\n"
@@ -241,6 +242,10 @@ class OpenAIHostedSession:
             kwargs["parallel_tool_calls"] = False
         else:
             kwargs["tool_choice"] = "none"
+            # The requirements auditor has its own strict response shape;
+            # other read-only reviewers use their separate response contracts.
+            if prompt.startswith('UNABHÄNGIGE REQUIREMENTS VALIDATION'):
+                kwargs['text'] = {'format': REQUIREMENTS_RESPONSE_FORMAT}
         effort = self.job.config.reasoning.effort
         if effort is not None:
             kwargs["reasoning"] = {"effort": effort}

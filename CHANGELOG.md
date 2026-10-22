@@ -3,6 +3,25 @@
 Änderungen in umgekehrter Versionsreihenfolge. Die historischen Abschnitte
 sind inhaltlich unverändert übernommen; sie dokumentieren jeweils den damaligen Stand.
 
+## 0.9.7 – Robuste unabhängige Requirements-Reviews (22.10.2026)
+
+- Requirements-Reviewer in der Responses API mit einem strikt typisierten JSON-Schema
+  ansprechen (`findings` sind Objekte, keine bestätigenden Freitext-Sätze).
+- Widersprüche wie `status: passed` bei offenen Unsicherheiten weiterhin semantisch
+  zurückweisen; bei ungültiger Struktur höchstens einen neuen unabhängigen Versuch
+  mit denselben Seiten und vollständiger Evidenz durchführen.
+- API-Turn-Budget auch bei Wiederholungsversuchen beachten; beide Antworten im
+  Transkript und Versuch/Batch/Response-ID/Fehlercode im datensparsamen
+  `execution-events.jsonl` protokollieren.
+- Nach wiederholt ungültigen Antworten `needs_review` statt `failed`, den
+  Kandidaten als `REJECTED_NOT_VALIDATED` archivieren und, sofern vorhanden,
+  den letzten geschützten Stand wiederherstellen. Keine unvalidierten Änderungen
+  als erfolgreich kennzeichnen.
+- Regressionstests mit der fehlerhaften Reviewer-Antwort des Hosted-Laufs
+  von Version 0.9.6, inklusive Recovery, Fehlerpfad und Turn-Limit.
+
+---
+
 ## 0.9.6 – Kontextbezogener Zahlen-/Einheitenschutz (22.10.2026)
 
 - Numerische und physikalische Angaben in tatsächlichen Änderungen positionsbezogen
