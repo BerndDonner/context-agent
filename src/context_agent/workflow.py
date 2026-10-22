@@ -45,6 +45,7 @@ from context_agent.prompts import (
     render_missing_artifacts_prompt,
 )
 from context_agent.report import append_transcript, write_report
+from context_agent.runtime_evidence import reconcile_availability_warnings
 from context_agent.reproduction import (
     parse_review, render_pages, repair_prompt, reproduction_scope, review_prompt,
 )
@@ -201,6 +202,36 @@ def run_job(
         })
 
     checkpoint('resuming' if resume else 'started')
+
+    def log_rollback(reason: str, *, reason_code: str,
+                     differences: list[str] | None = None,
+                     findings: list[str] | None = None,
+                     worsened: dict | None = None,
+                     exception_type: str | None = None) -> None:
+        """Keep user-facing journal detail and privacy-safe structured telemetry.
+
+        Called after a failure is known. Data-bearing messages stay solely in
+        quality_journal; the durable events file contains counts and codes.
+        """
+        entry: dict = {'event': 'rollback', 'reason': reason}
+        if differences is not None:
+            entry['differences'] = differences
+        if findings is not None:
+            entry['findings'] = findings
+        if worsened is not None:
+            entry['worsened'] = worsened
+        report.quality_journal.append(entry)
+        rejected = _artifact_state(job.result_dir)
+        rejected_sha256 = (_source_digest(rejected)
+                           if rejected.main_tex is not None and
+                              rejected.include_snapshot is not None else None)
+        record_event(job.result_dir / 'execution-events.jsonl', 'regression_rollback',
+                     phase=phase_state, reason_code=reason_code,
+                     source_sha256=rejected_sha256,
+                     numeric_difference_count=len(differences) if differences is not None else None,
+                     finding_count=len(findings) if findings is not None else None,
+                     worsened_rule_count=len(worsened) if worsened is not None else None,
+                     exception_type=exception_type)
 
     def finish(state: ArtifactState) -> RunReport:
         if job.source_path is not None and state.main_tex is not None:
@@ -399,8 +430,9 @@ def run_job(
                     guard = improvement_guard(original_tex,
                                               state.main_tex.read_text(encoding='utf-8'))
                     if guard:
-                        report.quality_journal.append({'event': 'rollback',
-                            'reason': 'protected numeric content changed', 'differences': guard})
+                        log_rollback('protected numeric content changed',
+                                     reason_code='numeric_or_unit_inventory_changed',
+                                     differences=guard)
                         _restore_validated(job.result_dir,
                                            last_validated if last_validated.joinpath('validation.json').is_file()
                                            else baseline_snapshot)
@@ -478,11 +510,11 @@ def run_job(
                         # Evidence-anchored, changed regressions are independent
                         # of the baseline reviewer's wording and page batching.
                         if report.content_findings:
+                            log_rollback('verified new requirements regression',
+                                         reason_code='requirements_regression',
+                                         findings=[f.message for f in report.content_findings])
                             _restore_validated(job.result_dir, last_validated)
                             state = _artifact_state(job.result_dir)
-                            report.quality_journal.append({'event':'rollback',
-                                'reason':'verified new requirements regression',
-                                'findings':[f.message for f in report.content_findings]})
                             report.status = 'needs_review'
                             break
                         report.quality_journal.append({'event':'improve_requirements_delta',
@@ -491,10 +523,10 @@ def run_job(
                             'source_sha256': _source_digest(state)})
                     if report.content_findings and original_tex is None:
                         if was_quality_repair:
+                            log_rollback('original requirements regressed',
+                                         reason_code='requirements_regression')
                             _restore_validated(job.result_dir, last_validated)
                             state = _artifact_state(job.result_dir)
-                            report.quality_journal.append({'event':'rollback',
-                                 'reason':'original requirements regressed'})
                             report.status = 'needs_review'
                             break
                         if content_repairs >= job.config.review.max_content_repairs or not _may_turn(report, job):
@@ -507,10 +539,10 @@ def run_job(
                                        f'repair-requirements-{content_repairs}')
                         continue
                     if report.content_uncertainties and was_quality_repair and original_tex is None:
+                        log_rollback('requirements verification uncertain',
+                                     reason_code='requirements_uncertain')
                         _restore_validated(job.result_dir, last_validated)
                         state = _artifact_state(job.result_dir)
-                        report.quality_journal.append({'event':'rollback',
-                             'reason':'requirements verification uncertain'})
                         report.status = 'needs_review'
                         break
                     # Uncertainty is not a verified baseline for refinement, but
@@ -653,7 +685,9 @@ def run_job(
                             dst = include_stage / relative
                             dst.parent.mkdir(parents=True, exist_ok=True)
                             dst.write_bytes(data)
+                        runtime_dollar_checked = False
                         def remote_lint(name: str) -> list[QualityFinding]:
+                            nonlocal runtime_dollar_checked
                             if name != 'dollar_math':
                                 raise ContextAgentError(f'unknown dynamic lint: {name}')
                             if not _may_turn(report, job):
@@ -665,6 +699,7 @@ def run_job(
                             report.add_usage(turn.usage, phase='quality-dollar-lint', raw=turn.raw)
                             append_transcript(transcript_path, turn_number=report.agent_turns,
                                               phase='quality-dollar-lint', turn=turn)
+                            runtime_dollar_checked = True
                             return [QualityFinding(**dict(item, rule_id='dollar_math'))
                                     for item in payload['findings']]
                         context = QualityContext(job, state.main_tex, state.main_pdf, state.context_log,
@@ -691,7 +726,29 @@ def run_job(
                             findings.extend(semantic)
                         else:
                             report.review_uncertainties.append('No budget for semantic quality audit')
+                        findings, superseded = reconcile_availability_warnings(
+                            findings, pdf_compiled=state.valid_pdf,
+                            dollar_lint_ok=runtime_dollar_checked, includes=include_stage,
+                            references_available=bool(job.references) and
+                            all(path.is_file() for path in job.references))
                         report.findings = _deduplicate(findings)
+                        if superseded:
+                            report.quality_journal.append({
+                                'event': 'runtime_warnings_superseded',
+                                'reason_codes': superseded,
+                                'source_sha256': _source_digest(state),
+                            })
+                            record_event(job.result_dir / 'execution-events.jsonl',
+                                         'runtime_warnings_superseded', phase='quality-validation',
+                                         runtime_resolution_count=len(superseded))
+                        report.consistency['runtime_evidence'] = {
+                            'pdf_compiled': state.valid_pdf,
+                            'dollar_lint_executed': runtime_dollar_checked,
+                            'include_resources_present': all((include_stage / name).is_file()
+                                for name in ('mymacros.mp', 'plotmod.lua')),
+                            'reference_files_present': bool(job.references) and
+                                all(path.is_file() for path in job.references),
+                        }
                         report.quality_journal.append({
                             'event': 'checks_completed',
                             'rules': list(selected),
@@ -705,15 +762,18 @@ def run_job(
                                 if rule not in pending_quality_batch and
                                    count > baseline_quality_counts.get(rule,0)}
                             if worsened:
+                                log_rollback('another selected rule regressed',
+                                             reason_code='quality_rule_regression',
+                                             worsened=worsened)
                                 _restore_validated(job.result_dir, last_validated)
                                 state = _artifact_state(job.result_dir)
-                                report.quality_journal.append({'event':'rollback',
-                                    'reason':'another selected rule regressed',
-                                    'worsened':worsened})
                                 report.status = 'needs_review'
                                 break
                             report.quality_journal.append({'event':'regression_gate_passed',
                                                    'source_sha256':_source_digest(state)})
+                            record_event(job.result_dir / 'execution-events.jsonl',
+                                         'regression_gate_passed', phase='quality-validation',
+                                         source_sha256=_source_digest(state))
                             was_quality_repair = False
                             pending_quality_batch = []
                             _save_validated(job.result_dir, last_validated, report)
@@ -774,14 +834,10 @@ def run_job(
                                                       phase='quality-autofix', turn=turn)
                                     state = _sync_state(session, job.result_dir)
                                 except Exception as exc:
+                                    log_rollback(str(exc), reason_code='remote_autofix_failed',
+                                                 exception_type=type(exc).__name__)
                                     _restore_validated(job.result_dir, last_validated)
                                     state = _artifact_state(job.result_dir)
-                                    report.quality_journal.append({'event':'rollback', 'reason':str(exc)})
-                                    record_event(job.result_dir / 'execution-events.jsonl',
-                                                 'quality_rollback', phase='quality-autofix',
-                                                 reason_code='remote_autofix_failed',
-                                                 exception_type=type(exc).__name__,
-                                                 source_sha256=digest)
                                     report.status = 'needs_review'
                                     break
                             else:
@@ -789,17 +845,17 @@ def run_job(
                                 prompt += '\nVom LLM geplanter Batch: ' + ', '.join(pending_batch)
                                 state = repair(prompt, f'refine-{quality_repairs}')
                             if _missing_artifacts(state):
+                                log_rollback('repair did not compile or lost artifacts',
+                                             reason_code='artifacts_missing')
                                 _restore_validated(job.result_dir, last_validated)
                                 state = _artifact_state(job.result_dir)
-                                report.quality_journal.append({'event':'rollback',
-                                     'reason':'repair did not compile or lost artifacts'})
                                 report.status = 'needs_review'
                                 break
                             if _source_digest(state) == digest:
+                                log_rollback('quality repair made no effective source/include change',
+                                             reason_code='no_effective_change')
                                 _restore_validated(job.result_dir, last_validated)
                                 state = _artifact_state(job.result_dir)
-                                report.quality_journal.append({'event':'rollback',
-                                     'reason':'quality repair made no effective source/include change'})
                                 report.status = 'needs_review'
                                 break
                             was_quality_repair = True

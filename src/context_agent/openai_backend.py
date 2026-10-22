@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
-from context_agent.diagnostics import exception_metadata, record_event
+from context_agent.diagnostics import exception_metadata, record_event, shell_output_events
 from context_agent.errors import ArtifactError, RemoteAgentError
 from context_agent.models import AgentTurn, ResolvedJob
 
@@ -274,6 +274,11 @@ class OpenAIHostedSession:
             raise RemoteAgentError(f"Responses API call failed: {type(exc).__name__}") from exc
 
         raw = _model_dump(response)
+        if not is_review:
+            for shell_event in shell_output_events(raw):
+                event_name = shell_event.pop('event')
+                self._event(event_name, phase='generation', response_id=str(response.id),
+                            **shell_event)
         self._event('agent_api_response', phase='review' if is_review else 'generation',
                     response_id=str(response.id),
                     request_id=getattr(response, '_request_id', None),

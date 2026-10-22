@@ -25,6 +25,8 @@ _SAFE_KEYS = frozenset({
     'selected_rule_count', 'plan_type', 'plan_batch_count', 'plan_item_count',
     'preflight_status', 'output_bytes', 'output_sha256',
     'plan_unknown_count', 'plan_duplicate_count', 'plan_missing_count',
+    'call_id_sha256', 'command_count', 'numeric_difference_count', 'finding_count',
+    'worsened_rule_count', 'snapshot_sha256', 'guard_type', 'runtime_resolution_count',
 })
 
 
@@ -62,3 +64,62 @@ def exception_metadata(exc: Exception) -> dict[str, Any]:
         'request_id': request_id if isinstance(request_id, str) else None,
         'error_code': code if isinstance(code, str) else None,
     }
+
+
+def shell_output_events(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Safe metadata for generator shell actions; never expose command contents.
+
+    A response may include multiple commands and outputs. Return one event per
+    command/output, preserving only hashes, lengths and execution status.
+    """
+    import hashlib
+    events: list[dict[str, Any]] = []
+    for item in raw.get('output', []):
+        if not isinstance(item, dict):
+            continue
+        kind = item.get('type')
+        if kind not in ('shell_call', 'shell_call_output'):
+            continue
+        call_id = item.get('call_id')
+        metadata: dict[str, Any] = {
+            'call_id_sha256': (hashlib.sha256(call_id.encode()).hexdigest()
+                               if isinstance(call_id, str) else None),
+            'shell_call_status': item.get('status'),
+        }
+        if kind == 'shell_call':
+            action = item.get('action')
+            commands = action.get('commands') if isinstance(action, dict) else None
+            metadata['command_count'] = len(commands) if isinstance(commands, list) else 0
+            events.append({'event': 'generator_shell_call', **metadata})
+            if isinstance(commands, list):
+                for command in commands:
+                    if not isinstance(command, str):
+                        continue
+                    raw_command = command.encode('utf-8')
+                    events.append({'event': 'generator_shell_command',
+                                   'call_id_sha256': metadata['call_id_sha256'],
+                                   'command_sha256': hashlib.sha256(raw_command).hexdigest(),
+                                   'command_bytes': len(raw_command)})
+        else:
+            # Never log output text. Record per-command exit status and lengths
+            # only; useful when generator compilation fails despite a completed
+            # Responses API call.
+            outputs = item.get('output')
+            if isinstance(outputs, list):
+                for output in outputs:
+                    if not isinstance(output, dict):
+                        continue
+                    outcome = output.get('outcome')
+                    result = {'event': 'generator_shell_result',
+                              'call_id_sha256': metadata['call_id_sha256']}
+                    if isinstance(outcome, dict):
+                        exit_code = outcome.get('exit_code')
+                        if type(exit_code) is int:
+                            result['exit_code'] = exit_code
+                    for stream in ('stdout', 'stderr'):
+                        value = output.get(stream)
+                        if isinstance(value, str):
+                            result[stream + '_bytes'] = len(value.encode('utf-8'))
+                    events.append(result)
+            events.append({'event': 'generator_shell_output', **metadata})
+    return events

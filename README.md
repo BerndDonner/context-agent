@@ -220,3 +220,26 @@ Große deterministische Qualitätskorrekturen werden nicht mehr als Base64-
 Shell-Argument gesendet. Der Host lädt sie direkt über die Container-Files-API
 als JSON hoch und übergibt nur Pfad und SHA-256 an den Prozess-Supervisor.
 Die Original-Quellhashes werden zusätzlich im Remote-Apply-Skript geprüft.
+
+### Improve-Regression und Diagnose (0.9.4)
+
+`improvement_guard` vergleicht Dezimalzahlen nun unabhängig von angrenzenden
+Einheiten, beispielsweise `0,152kΩ` versus `\dn{0.152}\unit{kOhm}`.
+Er prüft zusätzlich die Identität erkannter physikalischer Einheiten und blockiert
+Umstellungen wie `200Ω` zu `200\unit{Volt}` ebenso wie Zahl- oder
+Vorzeichenänderungen. Für unbekannte Makros und semantische Kontexte bleibt
+der unabhängige Requirements-Review notwendig; der Guard ist kein vollständiger
+ConTeXt-Interpreter.
+
+`execution-events.jsonl` enthält nun die Gründe **aller** Workflow-Rollbacks
+mit stabilen Fehlercodes, Anzahl der Abweichungen und dem SHA-256 der
+abgelehnten Ausgangsfassung (soweit vorhanden). Generator-Shell-Aktionen
+werden über Befehlshash/-länge, Ausführungsstatus sowie optional Exitcode
+und Outputlängen sichtbar, aber ohne Befehlstext und Outputdaten.
+
+Der Qualitätsbericht nimmt statische Aussagen über fehlende Lint- und
+ConTeXt-Läufe bzw. fehlende Include-Ressourcen aus der aktiven Fundliste,
+**nur wenn** die entsprechende Laufzeitevidenz tatsächlich vorliegt.
+Der historische Präflight-Befund bleibt nachvollziehbar und erhält
+`consistency.runtime_evidence`; offene Scanstellen bleiben ausdrücklich offen.
+Der gesamte Hosted-End-to-End-Prozess braucht weiterhin einen realen API-Test.

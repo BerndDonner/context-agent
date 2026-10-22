@@ -125,6 +125,12 @@ def test_improve_numeric_regression_rolls_back(tmp_path, job_factory):
     assert report.status == 'needs_review', report.errors
     assert '1{,}5' in (root/'result/main.tex').read_text()
     assert any(i['event']=='rollback' and 'numeric' in i['reason'] for i in report.quality_journal)
+    import json
+    events = [json.loads(line) for line in
+              (root/'result/execution-events.jsonl').read_text().splitlines()]
+    assert any(e['event'] == 'regression_rollback' and
+               e['reason_code'] == 'numeric_or_unit_inventory_changed' for e in events)
+    assert all('1{,}5' not in json.dumps(e) for e in events)
 
 
 def test_initial_compile_must_not_change_source(tmp_path, job_factory):
