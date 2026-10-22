@@ -78,14 +78,35 @@ def run_job(
     original_job = load_job(job_directory)
     rules = load_rules(original_job)
     # Strict preflight BEFORE deleting or replacing any prior result.
-    consistency = (preflight_factory or llm_preflight)(original_job, rules)
+    preflight_events = original_job.root / '.context-agent' / 'preflight-events.jsonl'
+    record_event(preflight_events, 'preflight_started', phase='consistency-preflight',
+                 selected_rule_count=len(rules))
+    try:
+        consistency = (preflight_factory or llm_preflight)(original_job, rules)
+    except Exception as exc:
+        record_event(preflight_events, 'preflight_failed', phase='consistency-preflight',
+                     exception_type=type(exc).__name__, reason_code='invalid_response_or_api_failure')
+        if isinstance(exc, ContextAgentError):
+            raise ContextAgentError(f'{exc} (diagnostics: {preflight_events})') from exc
+        raise
     if consistency.get('status') != 'passed':
+        record_event(preflight_events, 'preflight_blocked', phase='consistency-preflight',
+                     reason_code='blocking_quality_or_requirements_conflict')
         problems = consistency.get('conflicts', [])
         raise ContextAgentError('Quality/requirement preflight blocked execution: ' +
                                 json.dumps(problems, ensure_ascii=False))
     selected = tuple(rule.id for rule in rules)
     plan = consistency['plan']
+    if consistency.get('plan_fallback_reason'):
+        record_event(preflight_events, 'preflight_plan_fallback',
+                     phase='consistency-preflight',
+                     reason_code=consistency['plan_fallback_reason'],
+                     selected_rule_count=len(selected))
+    record_event(preflight_events, 'preflight_passed', phase='consistency-preflight',
+                 selected_rule_count=len(selected))
     progress = Progress()
+    if consistency.get('plan_fallback_reason'):
+        progress('Präflight: ungültiger Modell-Plan; sichere Einzelregel-Reihenfolge verwendet')
     stored: dict | None = None
     stage = original_job.root / '.resume-work'
     if resume:

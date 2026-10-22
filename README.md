@@ -2,6 +2,23 @@
 
 `context-agent` erzeugt oder überarbeitet mit zwingend gewähltem `mode` aus Aufgabe, verbindlichem Template und Eingabedokumenten eine kompilierte ConTeXt-LMTX-Fassung über die OpenAI Responses API mit Hosted Shell. Ziel ist eine möglichst hochwertige Ausgangsbasis für die manuelle Nachbearbeitung. Der Originalauftrag bleibt während aller Reparaturen der entscheidende Maßstab.
 
+
+### Präflight-Diagnose und ungültige Modell-Pläne
+
+Bereits **vor** einem Hosted-Containerlauf schreibt der Agent
+`<job>/.context-agent/preflight-events.jsonl`. Dieses Protokoll bleibt auch bei
+Präflight-Fehlern erhalten, ohne ein bestehendes `result/` zu überschreiben.
+Es enthält API-Status und Response-ID sowie eine redigierte Strukturbeschreibung
+von `plan`, aber keine Modellantwort, Prompts oder Dokumentinhalte.
+
+Fehlt der vom Modell vorgeschlagene Ausführungsplan, ist er unvollständig oder
+enthält er unbekannte Regeln, wird **nur** die optionale Batch-Planung durch
+Einzelregel-Batches in der Reihenfolge der expliziten `quality`-Liste ersetzt.
+Der vorangestellte Konsistenzentscheid bleibt verbindlich: `blocked`,
+blockierende Requirements-Konflikte oder fehlerhafte Präflight-Urteile
+stoppen den Auftrag weiterhin. Der Fallback ist unter
+`report.json` → `consistency.plan_fallback_reason` nachvollziehbar.
+
 ## Anforderungen
 
 Python ab 3.13, die in `pyproject.toml` genannten Abhängigkeiten, ein OpenAI-API-Key in `OPENAI_API_KEY` und ein für den Job angegebenes ConTeXt-LMTX-Archiv. Für lokale PDF-Prüfungen wird PyMuPDF verwendet. Der Hosted-Container führt den eigentlichen Satzlauf mit dem mitgelieferten flüchtigen Runner aus.

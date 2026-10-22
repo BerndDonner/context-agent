@@ -755,3 +755,24 @@ def test_uncertain_requirements_still_run_read_only_quality_checks(tmp_path: Pat
     assert any(item.rule_id == 'bad_word' for item in report.findings)
     assert any(item['event'] == 'read_only_quality_audit' for item in report.quality_journal)
     assert not (root / 'result/.validated/validation.json').exists()
+
+
+def test_malformed_llm_plan_uses_explicit_rule_order_and_logs_fallback(tmp_path, job_factory):
+    from context_agent.quality_preflight import parse_preflight
+    import json
+    root = job_factory(tmp_path)
+    yaml = root / 'job.yaml'
+    yaml.write_text(yaml.read_text().replace('quality: []',
+                    'quality:\n  - dollar_math'), encoding='utf-8')
+
+    def malformed_plan(job, rules):
+        return parse_preflight(json.dumps({'status': 'passed', 'conflicts': [],
+            'uncertainties': [], 'plan': [[]]}), tuple(r.id for r in rules))
+
+    report = run_job(root, session_factory=lambda job, *_: FakeSession(job),
+                     preflight_factory=malformed_plan)
+    assert report.status == 'success', report.errors
+    assert report.quality_plan == [['dollar_math']]
+    assert report.consistency['plan_fallback_reason'] == 'invalid_plan_shape'
+    trace = (root / '.context-agent' / 'preflight-events.jsonl').read_text()
+    assert 'preflight_plan_fallback' in trace

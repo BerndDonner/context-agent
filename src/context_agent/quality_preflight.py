@@ -1,12 +1,15 @@
 """Read-only preflight before the expensive container and before clearing results."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from context_agent.diagnostics import exception_metadata, record_event
 from context_agent.errors import ContextAgentError
 from context_agent.models import ResolvedJob
 from context_agent.quality_rules import QualityRule
@@ -77,16 +80,31 @@ def parse_preflight(output: str, ids: tuple[str, ...]) -> dict[str, Any]:
     uncertain = data.get('uncertainties')
     if not isinstance(uncertain, list) or any(not isinstance(x, str) for x in uncertain):
         raise ContextAgentError('invalid preflight uncertainties')
+    # The model's ordering/batching proposal is advisory. The safety verdict
+    # and the explicit rule selection are NOT advisory. A malformed proposal
+    # must not block the job or silently introduce/omit a checker.
     plan = data.get('plan')
-    if not isinstance(plan, list) or any(not isinstance(batch, list) or not batch for batch in plan):
-        if ids:
-            raise ContextAgentError('invalid quality-rule plan')
-        plan = []
-    flat = [id for batch in plan for id in batch]
-    if len(flat) != len(ids) or set(flat) != set(ids) or len(flat) != len(set(flat)):
-        raise ContextAgentError('preflight plan does not cover precisely the selected rules')
-    return {'status':data['status'], 'conflicts':conflicts,
-            'uncertainties':uncertain,'plan':plan}
+    fallback_reason = None
+    if not isinstance(plan, list) or any(
+        not isinstance(batch, list) or not batch or
+        any(not isinstance(rule_id, str) for rule_id in batch)
+        for batch in plan
+    ):
+        fallback_reason = 'invalid_plan_shape'
+    else:
+        flat = [rule_id for batch in plan for rule_id in batch]
+        if (len(flat) != len(ids) or set(flat) != set(ids)
+                or len(flat) != len(set(flat))):
+            fallback_reason = 'invalid_plan_coverage'
+    if fallback_reason:
+        # Singleton batches avoid accidental coupling between otherwise
+        # independent refinements, preserving the user's declared rule order.
+        plan = [[rule_id] for rule_id in ids]
+    result = {'status': data['status'], 'conflicts': conflicts,
+              'uncertainties': uncertain, 'plan': plan}
+    if fallback_reason:
+        result['plan_fallback_reason'] = fallback_reason
+    return result
 
 
 def llm_preflight(job: ResolvedJob, rules: tuple[QualityRule, ...]) -> dict[str, Any]:
@@ -107,6 +125,10 @@ def llm_preflight(job: ResolvedJob, rules: tuple[QualityRule, ...]) -> dict[str,
         args['service_tier']='default'
     if job.config.processing.mode == 'flex':
         args['service_tier']='flex'
+    events = job.root / '.context-agent' / 'preflight-events.jsonl'
+    record_event(events, 'preflight_api_started', phase='consistency-preflight',
+                 selected_rule_count=len(rules))
+    started = time.monotonic()
     uploaded = []
     try:
         content = args['input'][0]['content']
@@ -123,14 +145,64 @@ def llm_preflight(job: ResolvedJob, rules: tuple[QualityRule, ...]) -> dict[str,
             else:
                 content.append({'type':'input_image','file_id':str(record.id),'detail':'high'})
         response = client.responses.create(**args)
+        raw = _model_dump(response)
+        output = _extract_output_text(response, raw)
+        # Do not store the preflight prompt, PDF contents or model prose.
+        # A shape summary permits diagnosing malformed plans without leaks.
+        shape = {}
+        try:
+            normalized = output.strip()
+            if normalized.startswith('```'):
+                normalized = re.sub(r'^```(?:json)?\s*|\s*```$', '', normalized)
+            candidate = json.loads(normalized)
+            if isinstance(candidate, dict):
+                proposed = candidate.get('plan')
+                shape['plan_type'] = type(proposed).__name__
+                if isinstance(proposed, list):
+                    shape['plan_batch_count'] = len(proposed)
+                    shape['plan_item_count'] = sum(len(batch) for batch in proposed
+                                                   if isinstance(batch, list))
+                status = candidate.get('status')
+                shape['preflight_status'] = status if status in ('passed', 'blocked') else 'invalid'
+                if isinstance(proposed, list):
+                    planned = [rule_id for batch in proposed if isinstance(batch, list)
+                               for rule_id in batch if isinstance(rule_id, str)]
+                    expected = {rule.id for rule in rules}
+                    shape['plan_unknown_count'] = sum(rule_id not in expected for rule_id in planned)
+                    shape['plan_duplicate_count'] = len(planned) - len(set(planned))
+                    shape['plan_missing_count'] = len(expected - set(planned))
+        except ValueError:
+            shape['plan_type'] = 'unparseable_json'
+        usage = raw.get('usage') or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        incomplete = raw.get('incomplete_details') or {}
+        incomplete_reason = incomplete.get('reason') if isinstance(incomplete, dict) else None
+        record_event(events, 'preflight_api_response', phase='consistency-preflight',
+                     response_id=raw.get('id'), response_status=raw.get('status'),
+                     request_id=getattr(response, '_request_id', None),
+                     incomplete_reason=incomplete_reason,
+                     elapsed_ms=round((time.monotonic() - started)*1000),
+                     output_bytes=len(output.encode('utf-8')),
+                     output_sha256=hashlib.sha256(output.encode('utf-8')).hexdigest(),
+                     max_output_tokens=args['max_output_tokens'],
+                     total_tokens=usage.get('total_tokens'),
+                     **shape)
+        result = parse_preflight(output, tuple(rule.id for rule in rules))
+        if 'plan_fallback_reason' not in result:
+            record_event(events, 'preflight_plan_accepted', phase='consistency-preflight',
+                         selected_rule_count=len(rules))
+        result['usage'] = usage
+        return result
+    except Exception as exc:
+        record_event(events, 'preflight_api_failure', phase='consistency-preflight',
+                     reason_code='preflight_or_transport_failed',
+                     elapsed_ms=round((time.monotonic() - started)*1000),
+                     **exception_metadata(exc))
+        raise
     finally:
-        for id in uploaded:
+        for file_id in uploaded:
             try:
-                client.files.delete(id)
+                client.files.delete(file_id)
             except Exception:
                 pass
-    raw = _model_dump(response)
-    result = parse_preflight(_extract_output_text(response, raw),
-                             tuple(rule.id for rule in rules))
-    result['usage'] = raw.get('usage', {})
-    return result

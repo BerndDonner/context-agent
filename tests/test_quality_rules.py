@@ -88,8 +88,9 @@ def test_preflight_exact_plan_and_conflict():
           'plan':[['semantic_numbers'],['number_with_unit']]}
     assert parse_preflight(json.dumps(data),ids)['status']=='passed'
     data['plan']=[['semantic_numbers']]
-    with pytest.raises(Exception,match='precisely'):
-        parse_preflight(json.dumps(data),ids)
+    recovered = parse_preflight(json.dumps(data),ids)
+    assert recovered['plan'] == [['semantic_numbers'], ['number_with_unit']]
+    assert recovered['plan_fallback_reason'] == 'invalid_plan_coverage'
     data['plan']=[list(ids)]
     data['conflicts']=[{'rules':['number_with_unit'],'reason':'semantic collision',
                          'relevance':'blocking'}]

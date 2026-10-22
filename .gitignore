@@ -31,3 +31,6 @@ build/
 # Resume staging and run history
 examples/*/.resume-work/
 examples/*/.run-history/
+
+# Durable preflight diagnostics (before result/ is touched)
+.context-agent/

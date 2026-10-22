@@ -22,6 +22,9 @@ _SAFE_KEYS = frozenset({
     'file_count', 'stdout_bytes', 'stderr_bytes', 'exit_code', 'process_status',
     'retry', 'api_calls', 'reason_code', 'total_tokens', 'input_tokens',
     'output_tokens', 'max_output_tokens', 'source_sha256', 'stage',
+    'selected_rule_count', 'plan_type', 'plan_batch_count', 'plan_item_count',
+    'preflight_status', 'output_bytes', 'output_sha256',
+    'plan_unknown_count', 'plan_duplicate_count', 'plan_missing_count',
 })
 
 
